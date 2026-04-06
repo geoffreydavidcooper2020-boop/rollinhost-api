@@ -1,8 +1,13 @@
 const { Resend } = require("resend");
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const apiKey = process.env.RESEND_API_KEY;
+const resend = apiKey && apiKey !== "placeholder" ? new Resend(apiKey) : null;
 
 async function sendConfirmationEmail({ guestEmail, guestName, spaceName, parkName, checkIn, checkOut, total }) {
+  if (!resend) {
+    console.log("Resend not configured — skipping email to", guestEmail);
+    return;
+  }
   await resend.emails.send({
     from: process.env.RESEND_FROM_EMAIL,
     to: guestEmail,
