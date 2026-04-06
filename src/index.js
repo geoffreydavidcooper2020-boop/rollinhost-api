@@ -12,6 +12,7 @@ const webhooksRouter = require("./routes/webhooks");
 const app = express();
 
 app.use(helmet());
+app.set("trust proxy", 1);
 app.use(cors());
 app.use(
   rateLimit({

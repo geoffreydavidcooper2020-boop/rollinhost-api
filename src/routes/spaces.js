@@ -24,7 +24,7 @@ router.get("/", async (req, res) => {
          AND b.check_in < $3
          AND b.check_out > $2
        WHERE p.slug = $1
-       ORDER BY s.name`,
+       ORDER BY s.number`,
       [park, check_in || "1970-01-01", check_out || "9999-12-31"]
     );
 
