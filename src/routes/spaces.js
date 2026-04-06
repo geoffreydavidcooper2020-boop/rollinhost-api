@@ -3,13 +3,13 @@ const db = require("../db");
 
 const router = Router();
 
-// GET /spaces?park_id=&check_in=&check_out=
-// Returns all spaces for a park with availability status
+// GET /spaces?park=mustang-corner&check_in=&check_out=
+// Returns all spaces for a park (by slug) with availability status
 router.get("/", async (req, res) => {
-  const { park_id, check_in, check_out } = req.query;
+  const { park, check_in, check_out } = req.query;
 
-  if (!park_id) {
-    return res.status(400).json({ error: "park_id is required" });
+  if (!park) {
+    return res.status(400).json({ error: "park (slug) is required" });
   }
 
   try {
@@ -17,14 +17,15 @@ router.get("/", async (req, res) => {
       `SELECT s.*,
         CASE WHEN b.id IS NOT NULL THEN false ELSE true END AS available
        FROM spaces s
+       INNER JOIN parks p ON p.id = s.park_id
        LEFT JOIN bookings b
          ON b.space_id = s.id
          AND b.status IN ('confirmed', 'pending')
          AND b.check_in < $3
          AND b.check_out > $2
-       WHERE s.park_id = $1
+       WHERE p.slug = $1
        ORDER BY s.name`,
-      [park_id, check_in || "1970-01-01", check_out || "9999-12-31"]
+      [park, check_in || "1970-01-01", check_out || "9999-12-31"]
     );
 
     res.json(spaces);
