@@ -5,10 +5,17 @@ const { sendOwnerAlert } = require("../services/sms");
 const { sendConfirmationEmail } = require("../services/email");
 
 const router = Router();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+const key = process.env.STRIPE_SECRET_KEY;
+const stripe = key && key !== "placeholder" ? new Stripe(key) : null;
 
 // POST /webhooks/stripe
 router.post("/stripe", async (req, res) => {
+  if (!stripe) {
+    console.log("Stripe not configured — skipping webhook");
+    return res.status(503).json({ error: "Stripe not configured" });
+  }
+
   let event;
 
   try {
