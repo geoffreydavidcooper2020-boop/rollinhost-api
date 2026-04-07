@@ -3,7 +3,9 @@ const Stripe = require("stripe");
 const db = require("../db");
 
 const router = Router();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+const key = process.env.STRIPE_SECRET_KEY;
+const stripe = key && key !== "placeholder" ? new Stripe(key) : null;
 
 // POST /bookings
 // Creates a booking + Stripe payment intent
@@ -73,6 +75,12 @@ router.post("/", async (req, res) => {
     const total = nightlyRate * nights;
 
     // Create Stripe payment intent
+    if (!stripe) {
+      await client.query("ROLLBACK");
+      console.log("Stripe not configured — cannot create payment intent");
+      return res.status(503).json({ error: "Payment processing not configured" });
+    }
+
     const paymentIntent = await stripe.paymentIntents.create({
       amount: total,
       currency: "usd",
@@ -117,12 +125,8 @@ router.post("/:id/cancel", async (req, res) => {
       return res.status(404).json({ error: "Booking not found or already cancelled" });
     }
 
-    // Refund if payment was captured
-    if (rows[0].stripe_payment_intent_id && rows[0].status === 'confirmed') {
-      await stripe.refunds.create({
-        payment_intent: rows[0].stripe_payment_intent_id,
-      });
-    }
+    // Refunds are handled manually by park owners through their Stripe dashboard
+    // until Stripe Connect is implemented.
 
     res.json(rows[0]);
   } catch (err) {
