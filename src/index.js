@@ -13,7 +13,13 @@ const app = express();
 
 app.use(helmet());
 app.set("trust proxy", 1);
-app.use(cors());
+const ALLOWED_ORIGINS = [
+  "http://geoffreyc35.sg-host.com",
+  "https://geoffreyc35.sg-host.com",
+  "http://rollinhost.com",
+  "https://rollinhost.com",
+];
+app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(
   rateLimit({
     windowMs: 15 * 60 * 1000,
