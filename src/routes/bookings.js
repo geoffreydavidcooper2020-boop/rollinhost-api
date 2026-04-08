@@ -104,15 +104,15 @@ router.post("/", async (req, res) => {
 
     // Insert booking
     const { rows: bookingRows } = await client.query(
-      `INSERT INTO bookings
-         (space_id, guest_first_name, guest_last_name, guest_email, guest_phone,
-          check_in, check_out, nights, nightly_rate, total, status,
-          stripe_payment_intent_id, rate_type, booking_source)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12, $13)
-       RETURNING *`,
-      [space.id, guest_first_name, guest_last_name, guest_email, guest_phone || null,
-       check_in, check_out, nights, nightlyRate, total,
-       paymentIntent.id, rate_type, booking_source || null]
+      `INSERT INTO bookings (
+         park_id, space_id, guest_first_name, guest_last_name, guest_email, guest_phone,
+         check_in, check_out, rate_type, rate_amount, nights, subtotal, total_charged,
+         booking_source, space_number, status
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'confirmed')
+       RETURNING id`,
+      [park.id, space.id, guest_first_name, guest_last_name, guest_email, guest_phone || null,
+       check_in, check_out, rate_type, nightlyRate, nights, total, total,
+       booking_source || 'online', parseInt(space_number, 10)]
     );
 
     await client.query("COMMIT");
