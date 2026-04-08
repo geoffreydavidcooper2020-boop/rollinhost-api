@@ -82,7 +82,6 @@ router.post("/", async (req, res) => {
 
     const nightlyRate = Number(park.rate_nightly);
     const total = nightlyRate * nights;
-    const guestName = `${guest_first_name} ${guest_last_name}`;
 
     // Create Stripe payment intent
     if (!stripe) {
@@ -106,12 +105,12 @@ router.post("/", async (req, res) => {
     // Insert booking
     const { rows: bookingRows } = await client.query(
       `INSERT INTO bookings
-         (space_id, guest_name, guest_email, guest_phone, check_in, check_out,
-          nights, nightly_rate, total, status, stripe_payment_intent_id,
-          rate_type, booking_source)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, $12)
+         (space_id, guest_first_name, guest_last_name, guest_email, guest_phone,
+          check_in, check_out, nights, nightly_rate, total, status,
+          stripe_payment_intent_id, rate_type, booking_source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12, $13)
        RETURNING *`,
-      [space.id, guestName, guest_email, guest_phone || null,
+      [space.id, guest_first_name, guest_last_name, guest_email, guest_phone || null,
        check_in, check_out, nights, nightlyRate, total,
        paymentIntent.id, rate_type, booking_source || null]
     );
