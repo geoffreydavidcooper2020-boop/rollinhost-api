@@ -15,6 +15,7 @@ router.get("/", async (req, res) => {
   try {
     const { rows: spaces } = await db.query(
       `SELECT s.*,
+        p.rate_nightly AS price_per_night,
         CASE WHEN b.id IS NOT NULL THEN false ELSE true END AS available
        FROM spaces s
        INNER JOIN parks p ON p.id = s.park_id
