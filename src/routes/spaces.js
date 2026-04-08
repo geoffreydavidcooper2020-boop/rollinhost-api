@@ -15,7 +15,6 @@ router.get("/", async (req, res) => {
   try {
     const { rows: spaces } = await db.query(
       `SELECT s.*,
-        p.rate_nightly AS price_per_night,
         CASE WHEN b.id IS NOT NULL THEN false ELSE true END AS available
        FROM spaces s
        INNER JOIN parks p ON p.id = s.park_id
@@ -26,7 +25,9 @@ router.get("/", async (req, res) => {
          AND b.check_out > $2
        WHERE p.slug = $1
        ORDER BY s.number`,
-      [park, check_in || "1970-01-01", check_out || "9999-12-31"]
+      [park,
+       check_in || new Date().toISOString().slice(0, 10),
+       check_out || (() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })()]
     );
 
     res.json(spaces);
