@@ -130,6 +130,30 @@ router.post("/", async (req, res) => {
   }
 });
 
+// GET /bookings?park=mustang-corner
+// Lists all bookings for a park
+router.get("/", async (req, res) => {
+  const { park } = req.query;
+  if (!park) {
+    return res.status(400).json({ error: "park (slug) is required" });
+  }
+
+  try {
+    const { rows } = await db.query(
+      `SELECT b.*
+       FROM bookings b
+       JOIN parks p ON p.id = b.park_id
+       WHERE p.slug = $1
+       ORDER BY b.check_in DESC`,
+      [park]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("Error listing bookings:", err);
+    res.status(500).json({ error: "Failed to list bookings" });
+  }
+});
+
 // POST /bookings/:id/cancel
 router.post("/:id/cancel", async (req, res) => {
   try {
