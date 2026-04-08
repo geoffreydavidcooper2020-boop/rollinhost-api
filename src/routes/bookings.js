@@ -10,6 +10,7 @@ const stripe = key && key !== "placeholder" ? new Stripe(key) : null;
 // POST /bookings
 // Creates a booking + Stripe payment intent
 router.post("/", async (req, res) => {
+  console.log("Received body:", JSON.stringify(req.body));
   const {
     park_slug, space_number,
     guest_first_name, guest_last_name, guest_email, guest_phone,
