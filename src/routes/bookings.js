@@ -31,22 +31,22 @@ router.post("/", async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // Look up park by slug
+    // Look up park by slug (include rate_nightly for pricing)
     const { rows: parkRows } = await client.query(
-      "SELECT id FROM parks WHERE slug = $1",
+      "SELECT id, rate_nightly FROM parks WHERE slug = $1",
       [park_slug]
     );
     if (parkRows.length === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Park not found" });
     }
-    const parkId = parkRows[0].id;
+    const park = parkRows[0];
 
     // Look up space by park + number
     const { rows: spaceRows } = await client.query(
       `SELECT * FROM spaces
        WHERE park_id = $1 AND number = $2`,
-      [parkId, parseInt(space_number, 10)]
+      [park.id, parseInt(space_number, 10)]
     );
     if (spaceRows.length === 0) {
       await client.query("ROLLBACK");
@@ -80,19 +80,7 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "check_out must be after check_in" });
     }
 
-    // Apply pricing rules (weekly/monthly discounts)
-    const { rows: rules } = await client.query(
-      `SELECT * FROM pricing_rules
-       WHERE park_id = $1 AND min_nights <= $2
-       ORDER BY min_nights DESC LIMIT 1`,
-      [parkId, nights]
-    );
-
-    let nightlyRate = space.price_per_night;
-    if (rules.length > 0) {
-      nightlyRate = Math.round(nightlyRate * (1 - rules[0].discount_pct / 100));
-    }
-
+    const nightlyRate = Number(park.rate_nightly);
     const total = nightlyRate * nights;
     const guestName = `${guest_first_name} ${guest_last_name}`;
 
