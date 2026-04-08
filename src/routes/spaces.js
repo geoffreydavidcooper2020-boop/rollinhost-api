@@ -65,4 +65,30 @@ router.get("/:id/availability", async (req, res) => {
   }
 });
 
+// GET /spaces/:parkSlug/:spaceNumber/calendar
+// Returns booked date ranges for a specific space
+router.get("/:parkSlug/:spaceNumber/calendar", async (req, res) => {
+  const { parkSlug, spaceNumber } = req.params;
+
+  try {
+    const { rows } = await db.query(
+      `SELECT b.check_in, b.check_out
+       FROM bookings b
+       JOIN spaces s ON s.id = b.space_id
+       JOIN parks p ON p.id = s.park_id
+       WHERE p.slug = $1
+         AND s.number = $2
+         AND b.status IN ('confirmed', 'pending')
+         AND b.check_out >= CURRENT_DATE
+       ORDER BY b.check_in`,
+      [parkSlug, parseInt(spaceNumber, 10)]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("Error fetching calendar:", err);
+    res.status(500).json({ error: "Failed to fetch calendar" });
+  }
+});
+
 module.exports = router;
