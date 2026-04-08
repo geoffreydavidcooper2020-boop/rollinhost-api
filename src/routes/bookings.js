@@ -45,8 +45,8 @@ router.post("/", async (req, res) => {
     // Look up space by park + number
     const { rows: spaceRows } = await client.query(
       `SELECT * FROM spaces
-       WHERE park_id = $1 AND (name = $2 OR number = $2)`,
-      [parkId, String(space_number)]
+       WHERE park_id = $1 AND number = $2`,
+      [parkId, parseInt(space_number, 10)]
     );
     if (spaceRows.length === 0) {
       await client.query("ROLLBACK");
