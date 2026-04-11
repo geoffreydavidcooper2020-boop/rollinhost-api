@@ -8,7 +8,6 @@ const key = process.env.STRIPE_SECRET_KEY;
 const stripe = key && key !== "placeholder" ? new Stripe(key) : null;
 
 // POST /bookings
-// Creates a booking + Stripe payment intent
 router.post("/", async (req, res) => {
   console.log("Received body:", JSON.stringify(req.body));
   const {
@@ -31,24 +30,23 @@ router.post("/", async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // Look up park by slug (include rate_nightly for pricing)
+    // Look up park
     const { rows: parkRows } = await client.query(
-      "SELECT id, rate_nightly FROM parks WHERE slug = $1",
+      "SELECT id, rate_nightly, rate_weekly, rate_monthly FROM parks WHERE slug = $1",
       [park_slug]
     );
-    if (parkRows.length === 0) {
+    if (!parkRows.length) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Park not found" });
     }
     const park = parkRows[0];
 
-    // Look up space by park + number
+    // Look up space
     const { rows: spaceRows } = await client.query(
-      `SELECT * FROM spaces
-       WHERE park_id = $1 AND number = $2`,
+      "SELECT * FROM spaces WHERE park_id = $1 AND number = $2",
       [park.id, parseInt(space_number, 10)]
     );
-    if (spaceRows.length === 0) {
+    if (!spaceRows.length) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Space not found" });
     }
@@ -58,13 +56,12 @@ router.post("/", async (req, res) => {
     const { rows: conflicts } = await client.query(
       `SELECT id FROM bookings
        WHERE space_id = $1
-         AND status IN ('confirmed', 'pending')
+         AND status IN ('confirmed', 'pending', 'checked_in')
          AND check_in < $3
          AND check_out > $2
        FOR UPDATE`,
       [space.id, check_in, check_out]
     );
-
     if (conflicts.length > 0) {
       await client.query("ROLLBACK");
       return res.status(409).json({ error: "Space not available for selected dates" });
@@ -74,24 +71,32 @@ router.post("/", async (req, res) => {
     const nights = Math.ceil(
       (new Date(check_out) - new Date(check_in)) / (1000 * 60 * 60 * 24)
     );
-
     if (nights <= 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "check_out must be after check_in" });
     }
 
-    const nightlyRate = Number(park.rate_nightly);
-    const total = nightlyRate * nights;
+    // Rate calculation based on rate_type
+    let nightlyRate, total;
+    if (rate_type === "weekly") {
+      nightlyRate = Number(park.rate_weekly) || Number(park.rate_nightly) * 7;
+      total = Math.ceil(nights / 7) * nightlyRate;
+    } else if (rate_type === "monthly") {
+      nightlyRate = Number(park.rate_monthly) || Number(park.rate_nightly) * 30;
+      total = Math.ceil(nights / 30) * nightlyRate;
+    } else {
+      nightlyRate = Number(park.rate_nightly);
+      total = nightlyRate * nights;
+    }
 
-    // Create Stripe payment intent
+    // Create Stripe payment intent (amount in cents)
     if (!stripe) {
       await client.query("ROLLBACK");
-      console.log("Stripe not configured — cannot create payment intent");
       return res.status(503).json({ error: "Payment processing not configured" });
     }
 
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: total,
+      amount: Math.round(total * 100),
       currency: "usd",
       metadata: {
         park_slug,
@@ -102,17 +107,29 @@ router.post("/", async (req, res) => {
       },
     });
 
-    // Insert booking
+    // Insert booking as PENDING — webhook confirms it after payment
     const { rows: bookingRows } = await client.query(
       `INSERT INTO bookings (
-         park_id, space_id, guest_first_name, guest_last_name, guest_email, guest_phone,
-         check_in, check_out, rate_type, rate_amount, nights, subtotal, total_charged,
-         booking_source, space_number, status
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'confirmed')
+         park_id, space_id,
+         guest_first_name, guest_last_name, guest_email, guest_phone,
+         check_in, check_out, rate_type, rate_amount, nights,
+         subtotal, total_charged, booking_source, space_number, status
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending')
        RETURNING id`,
-      [park.id, space.id, guest_first_name, guest_last_name, guest_email, guest_phone || null,
-       check_in, check_out, rate_type, nightlyRate, nights, total, total,
-       booking_source || 'online', parseInt(space_number, 10)]
+      [
+        park.id, space.id,
+        guest_first_name, guest_last_name, guest_email, guest_phone || null,
+        check_in, check_out, rate_type, nightlyRate, nights,
+        total, total,
+        booking_source || "online", parseInt(space_number, 10)
+      ]
+    );
+
+    // Store payment intent in payments table
+    await client.query(
+      `INSERT INTO payments (booking_id, park_id, stripe_payment_intent_id, amount, status)
+       VALUES ($1, $2, $3, $4, 'pending')`,
+      [bookingRows[0].id, park.id, paymentIntent.id, total]
     );
 
     await client.query("COMMIT");
@@ -131,20 +148,15 @@ router.post("/", async (req, res) => {
 });
 
 // GET /bookings?park=mustang-corner
-// Lists all bookings for a park
 router.get("/", async (req, res) => {
   const { park } = req.query;
-  if (!park) {
-    return res.status(400).json({ error: "park (slug) is required" });
-  }
-
+  if (!park) return res.status(400).json({ error: "park (slug) is required" });
   try {
     const { rows } = await db.query(
-      `SELECT b.*
-       FROM bookings b
+      `SELECT b.* FROM bookings b
        JOIN parks p ON p.id = b.park_id
        WHERE p.slug = $1
-       ORDER BY b.check_in DESC`,
+       ORDER BY b.created_at DESC`,
       [park]
     );
     res.json(rows);
@@ -163,14 +175,7 @@ router.post("/:id/cancel", async (req, res) => {
        RETURNING *`,
       [req.params.id]
     );
-
-    if (rows.length === 0) {
-      return res.status(404).json({ error: "Booking not found or already cancelled" });
-    }
-
-    // Refunds are handled manually by park owners through their Stripe dashboard
-    // until Stripe Connect is implemented.
-
+    if (!rows.length) return res.status(404).json({ error: "Booking not found or already cancelled" });
     res.json(rows[0]);
   } catch (err) {
     console.error("Error cancelling booking:", err);
@@ -178,15 +183,45 @@ router.post("/:id/cancel", async (req, res) => {
   }
 });
 
+// POST /bookings/:id/checkin
+router.post("/:id/checkin", async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `UPDATE bookings SET status = 'checked_in', updated_at = NOW()
+       WHERE id = $1 AND status = 'confirmed'
+       RETURNING *`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Booking not found or not confirmed" });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Error checking in:", err);
+    res.status(500).json({ error: "Failed to check in" });
+  }
+});
+
+// POST /bookings/:id/checkout
+router.post("/:id/checkout", async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `UPDATE bookings SET status = 'checked_out', updated_at = NOW()
+       WHERE id = $1 AND status = 'checked_in'
+       RETURNING *`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Booking not found or not checked in" });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Error checking out:", err);
+    res.status(500).json({ error: "Failed to check out" });
+  }
+});
+
 // GET /bookings/:id
 router.get("/:id", async (req, res) => {
   try {
     const { rows } = await db.query("SELECT * FROM bookings WHERE id = $1", [req.params.id]);
-
-    if (rows.length === 0) {
-      return res.status(404).json({ error: "Booking not found" });
-    }
-
+    if (!rows.length) return res.status(404).json({ error: "Booking not found" });
     res.json(rows[0]);
   } catch (err) {
     console.error("Error fetching booking:", err);
