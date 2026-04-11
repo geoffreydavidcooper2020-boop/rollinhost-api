@@ -378,18 +378,77 @@ router.get("/:slug/applications", async (req, res) => {
 });
 
 // ── POST /parks/:slug/applications/:id/decide ─────────────────────────────
-// Owner manually approves or denies an application
+// Owner manually approves or denies an application — sends email to guest
 router.post("/:slug/applications/:id/decide", async (req, res) => {
-  const { id } = req.params;
+  const { slug, id } = req.params;
   const { decision, reason } = req.body;
   if (!["approved","denied"].includes(decision)) {
     return res.status(400).json({ error: "decision must be approved or denied" });
   }
   try {
-    await db.query(
-      `UPDATE applications SET decision = $1, reason = $2 WHERE id = $3`,
+    // Update the application
+    const { rows: appRows } = await db.query(
+      `UPDATE applications SET decision = $1, reason = $2 WHERE id = $3 RETURNING *`,
       [decision, reason || null, id]
     );
+    if (!appRows.length) return res.status(404).json({ error: "Application not found" });
+    const app = appRows[0];
+
+    // Get park name for email
+    const { rows: parkRows } = await db.query(
+      `SELECT name FROM parks WHERE slug = $1`, [slug]
+    );
+    const parkName = parkRows[0]?.name || "the park";
+
+    // Send email notification to guest
+    if (app.guest_email && process.env.RESEND_API_KEY) {
+      try {
+        const { Resend } = require("resend");
+        const resend = new Resend(process.env.RESEND_API_KEY);
+
+        if (decision === "approved") {
+          await resend.emails.send({
+            from: process.env.RESEND_FROM_EMAIL || "reservations@rollinhost.com",
+            to: app.guest_email,
+            subject: `Your application to ${parkName} has been approved!`,
+            html: `
+              <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+                <h2 style="color:#1a0d04">Application Approved ✓</h2>
+                <p>Hi ${app.guest_name || "there"},</p>
+                <p>Great news! Your application to stay at <strong>${parkName}</strong> has been approved.</p>
+                <p style="margin-top:16px">
+                  <a href="https://geoffreyc35.sg-host.com/book/" 
+                     style="background:#6b3a1f;color:#f5eed8;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:700;display:inline-block">
+                    Book Your Space Now →
+                  </a>
+                </p>
+                <p style="color:#666;font-size:13px;margin-top:16px">This approval is valid for 48 hours. Please complete your booking soon.</p>
+                <p style="color:#aaa;font-size:11px;margin-top:24px">Powered by Roll In Host LLC · rollinhost.com</p>
+              </div>
+            `
+          });
+        } else {
+          await resend.emails.send({
+            from: process.env.RESEND_FROM_EMAIL || "reservations@rollinhost.com",
+            to: app.guest_email,
+            subject: `Your application to ${parkName}`,
+            html: `
+              <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+                <h2 style="color:#1a0d04">Application Update</h2>
+                <p>Hi ${app.guest_name || "there"},</p>
+                <p>Thank you for your interest in <strong>${parkName}</strong>.</p>
+                <p>Unfortunately, we are unable to accommodate your stay at this time${reason ? ': <em>' + reason + '</em>' : '.'}.</p>
+                <p style="color:#666;font-size:13px;margin-top:16px">Please contact the park directly if you have any questions.</p>
+                <p style="color:#aaa;font-size:11px;margin-top:24px">Powered by Roll In Host LLC · rollinhost.com</p>
+              </div>
+            `
+          });
+        }
+      } catch (emailErr) {
+        console.error("Application decision email failed:", emailErr.message);
+      }
+    }
+
     res.json({ success: true });
   } catch (err) {
     console.error("Application decide error:", err);
