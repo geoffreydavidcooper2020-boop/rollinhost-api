@@ -9,6 +9,7 @@ const bookingsRouter = require("./routes/bookings");
 const parksRouter    = require("./routes/parks");
 const webhooksRouter = require("./routes/webhooks");
 const authRouter     = require("./routes/auth");
+const reportsRouter  = require("./routes/reports");
 
 const app = express();
 
@@ -53,6 +54,7 @@ app.use("/bookings", bookingsRouter);
 app.use("/parks",    parksRouter);
 app.use("/webhooks", webhooksRouter);
 app.use("/auth",     authRouter);
+app.use("/reports",  reportsRouter);
 
 // Health check
 app.get("/health", (_req, res) => res.json({
