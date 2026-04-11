@@ -118,34 +118,21 @@ router.put("/:slug/pricing-rules", async (req, res) => {
 });
 
 // ── PUT /parks/:slug/rates ────────────────────────────────────────────────
-// Save nightly/weekly/monthly rates to all spaces in the park
+// Save nightly/weekly/monthly rates to the park record
 router.put("/:slug/rates", async (req, res) => {
   const { slug } = req.params;
   const { nightly, weekly, monthly } = req.body;
   if (!nightly) return res.status(400).json({ error: "nightly rate required" });
 
   try {
-    const { rows: parkRows } = await db.query(
-      `SELECT id FROM parks WHERE slug = $1`, [slug]
-    );
-    if (!parkRows.length) return res.status(404).json({ error: "Park not found" });
-    const parkId = parkRows[0].id;
-
-    // Update price_per_night on all spaces, store weekly/monthly in park settings
-    await db.query(
-      `UPDATE spaces SET price_per_night = $1, updated_at = NOW() WHERE park_id = $2`,
-      [Math.round(nightly * 100), parkId]  // store in cents
-    );
-
-    // Store weekly/monthly in park record (add columns if needed)
-    await db.query(
+    const { rows } = await db.query(
       `UPDATE parks
-       SET rate_nightly = $1, rate_weekly = $2, rate_monthly = $3, updated_at = NOW()
-       WHERE id = $4`,
-      [nightly, weekly || null, monthly || null, parkId]
-    ).catch(() => {
-      // Columns may not exist yet — fail silently, space update succeeded
-    });
+       SET rate_nightly = $1, rate_weekly = $2, rate_monthly = $3
+       WHERE slug = $4
+       RETURNING id`,
+      [nightly, weekly || null, monthly || null, slug]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Park not found" });
 
     res.json({ success: true, nightly, weekly, monthly });
   } catch (err) {
