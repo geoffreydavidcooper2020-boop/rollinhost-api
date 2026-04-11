@@ -17,7 +17,6 @@ router.post("/stripe", async (req, res) => {
   }
 
   let event;
-
   try {
     event = stripe.webhooks.constructEvent(
       req.body,
@@ -31,54 +30,86 @@ router.post("/stripe", async (req, res) => {
 
   if (event.type === "payment_intent.succeeded") {
     const paymentIntent = event.data.object;
-
     try {
-      // Confirm the booking
-      const { rows } = await db.query(
-        `UPDATE bookings SET status = 'confirmed', updated_at = NOW()
-         WHERE stripe_payment_intent_id = $1 AND status = 'pending'
-         RETURNING *`,
+      // Find booking via payments table
+      const { rows: paymentRows } = await db.query(
+        `SELECT booking_id FROM payments WHERE stripe_payment_intent_id = $1`,
         [paymentIntent.id]
       );
 
-      if (rows.length === 0) {
-        console.warn("No pending booking found for payment intent:", paymentIntent.id);
+      if (!paymentRows.length) {
+        console.warn("No payment found for payment_intent:", paymentIntent.id);
+        return res.json({ received: true });
+      }
+
+      const bookingId = paymentRows[0].booking_id;
+
+      // Confirm the booking
+      const { rows } = await db.query(
+        `UPDATE bookings SET status = 'confirmed', updated_at = NOW()
+         WHERE id = $1 AND status = 'pending'
+         RETURNING *`,
+        [bookingId]
+      );
+
+      if (!rows.length) {
+        console.warn("No pending booking found for id:", bookingId);
         return res.json({ received: true });
       }
 
       const booking = rows[0];
 
-      // Fetch space and park details for notifications
+      // Update payment status
+      await db.query(
+        `UPDATE payments SET status = 'succeeded' WHERE stripe_payment_intent_id = $1`,
+        [paymentIntent.id]
+      );
+
+      // Fetch space and park details
       const { rows: details } = await db.query(
-        `SELECT s.name AS space_name, p.name AS park_name, p.owner_phone
+        `SELECT s.number AS space_name, p.name AS park_name, p.phone
          FROM spaces s
          JOIN parks p ON p.id = s.park_id
          WHERE s.id = $1`,
         [booking.space_id]
       );
 
-      const { space_name, park_name, owner_phone } = details[0];
+      if (!details.length) {
+        console.warn("No space/park found for booking:", bookingId);
+        return res.json({ received: true });
+      }
+
+      const { space_name, park_name, phone } = details[0];
+
+      // Build guest name
+      const guestFirst = booking.guest_first_name || "";
+      const guestLast  = booking.guest_last_name  || "";
+      const guestName  = (guestFirst + " " + guestLast).trim() || "Guest";
+      const total      = booking.total_charged || booking.total || 0;
 
       // Fire notifications in parallel
       await Promise.allSettled([
         sendOwnerAlert({
-          ownerPhone: owner_phone,
-          guestName: booking.guest_name,
-          spaceName: space_name,
+          ownerPhone: phone,
+          guestName,
+          spaceName: "Space #" + space_name,
           checkIn: booking.check_in,
           checkOut: booking.check_out,
-          total: booking.total,
+          total: Math.round(total * 100),
         }),
         sendConfirmationEmail({
           guestEmail: booking.guest_email,
-          guestName: booking.guest_name,
-          spaceName: space_name,
+          guestName,
+          spaceName: "Space #" + space_name,
           parkName: park_name,
           checkIn: booking.check_in,
           checkOut: booking.check_out,
-          total: booking.total,
+          total: Math.round(total * 100),
         }),
       ]);
+
+      console.log(`Booking ${bookingId} confirmed — notifications sent`);
+
     } catch (err) {
       console.error("Error processing payment webhook:", err);
     }
