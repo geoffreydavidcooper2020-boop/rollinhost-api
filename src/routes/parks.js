@@ -456,4 +456,35 @@ router.post("/:slug/applications/:id/decide", async (req, res) => {
   }
 });
 
+// ── GET /parks/:slug/smartpricing ────────────────────────────────────────
+router.get("/:slug/smartpricing", async (req, res) => {
+  const { slug } = req.params;
+  try {
+    const { rows } = await db.query(
+      `SELECT addons FROM parks WHERE slug = $1`, [slug]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Park not found" });
+    const addons = rows[0].addons || {};
+    res.json(addons.smart_pricing || { weekend_on:false, holiday_on:false, occupancy_on:false });
+  } catch (err) {
+    res.json({ weekend_on:false, holiday_on:false, occupancy_on:false });
+  }
+});
+
+// ── PUT /parks/:slug/smartpricing ─────────────────────────────────────────
+router.put("/:slug/smartpricing", async (req, res) => {
+  const { slug } = req.params;
+  const { config } = req.body;
+  try {
+    await db.query(
+      `UPDATE parks SET addons = addons || jsonb_build_object('smart_pricing', $1::jsonb) WHERE slug = $2`,
+      [JSON.stringify(config), slug]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Smart pricing save error:", err);
+    res.status(500).json({ error: "Failed to save smart pricing" });
+  }
+});
+
 module.exports = router;
