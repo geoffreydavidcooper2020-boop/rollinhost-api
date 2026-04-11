@@ -67,6 +67,18 @@ router.post("/", async (req, res) => {
       return res.status(409).json({ error: "Space not available for selected dates" });
     }
 
+    // Check blacklist
+    try {
+      const { rows: blacklisted } = await client.query(
+        `SELECT id FROM blacklist WHERE park_id = $1 AND email = $2`,
+        [park.id, (guest_email || "").toLowerCase()]
+      );
+      if (blacklisted.length > 0) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({ error: "Unable to process booking. Please contact the park directly." });
+      }
+    } catch(e) { /* blacklist table may not exist yet — fail open */ }
+
     // Calculate nights and price
     const nights = Math.ceil(
       (new Date(check_out) - new Date(check_in)) / (1000 * 60 * 60 * 24)
@@ -210,7 +222,48 @@ router.post("/:id/checkout", async (req, res) => {
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: "Booking not found or not checked in" });
-    res.json(rows[0]);
+    const booking = rows[0];
+    res.json(booking);
+
+    // Send review request email (free feature — always on)
+    if (booking.guest_email && process.env.RESEND_API_KEY) {
+      try {
+        // Get park info for the review link
+        const { rows: spaceRows } = await db.query(
+          `SELECT p.name AS park_name, p.slug
+           FROM spaces s JOIN parks p ON p.id = s.park_id
+           WHERE s.id = $1`, [booking.space_id]
+        );
+        if (spaceRows.length) {
+          const { park_name, slug } = spaceRows[0];
+          const guestFirst = booking.guest_first_name || "there";
+          const { Resend } = require("resend");
+          const resend = new Resend(process.env.RESEND_API_KEY);
+          await resend.emails.send({
+            from: process.env.RESEND_FROM_EMAIL || "reservations@rollinhost.com",
+            to: booking.guest_email,
+            subject: `How was your stay at ${park_name}?`,
+            html: `
+              <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+                <h2 style="color:#1a0d04">Thanks for staying with us, ${guestFirst}!</h2>
+                <p>We hope you had a wonderful stay at <strong>${park_name}</strong>.</p>
+                <p style="margin-top:12px">If you enjoyed your visit, we'd love it if you left us a quick review. It only takes a minute and means the world to a small, independent park like ours.</p>
+                <div style="text-align:center;margin:24px 0">
+                  <a href="https://www.google.com/search?q=${encodeURIComponent(park_name)}+rv+park+reviews"
+                     style="background:#6b3a1f;color:#f5eed8;padding:14px 28px;border-radius:6px;text-decoration:none;font-weight:700;display:inline-block;font-size:15px">
+                    ⭐ Leave a Google Review
+                  </a>
+                </div>
+                <p style="color:#666;font-size:13px">We look forward to seeing you again soon!</p>
+                <p style="color:#aaa;font-size:11px;margin-top:24px">Powered by Roll In Host LLC · rollinhost.com</p>
+              </div>
+            `
+          });
+        }
+      } catch (emailErr) {
+        console.error("Review request email failed:", emailErr.message);
+      }
+    }
   } catch (err) {
     console.error("Error checking out:", err);
     res.status(500).json({ error: "Failed to check out" });
