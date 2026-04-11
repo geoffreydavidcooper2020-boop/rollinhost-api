@@ -487,4 +487,78 @@ router.put("/:slug/smartpricing", async (req, res) => {
   }
 });
 
+// ── GET /parks/:slug/blacklist ────────────────────────────────────────────
+router.get("/:slug/blacklist", async (req, res) => {
+  const { slug } = req.params;
+  try {
+    const { rows: parkRows } = await db.query(`SELECT id FROM parks WHERE slug = $1`, [slug]);
+    if (!parkRows.length) return res.status(404).json({ error: "Park not found" });
+    const { rows } = await db.query(
+      `SELECT * FROM blacklist WHERE park_id = $1 ORDER BY created_at DESC`,
+      [parkRows[0].id]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.json([]);
+  }
+});
+
+// ── POST /parks/:slug/blacklist ───────────────────────────────────────────
+router.post("/:slug/blacklist", async (req, res) => {
+  const { slug } = req.params;
+  const { email, reason } = req.body;
+  if (!email) return res.status(400).json({ error: "email required" });
+  try {
+    const { rows: parkRows } = await db.query(`SELECT id FROM parks WHERE slug = $1`, [slug]);
+    if (!parkRows.length) return res.status(404).json({ error: "Park not found" });
+    await db.query(
+      `INSERT INTO blacklist (park_id, email, reason, created_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (park_id, email) DO UPDATE SET reason = $3`,
+      [parkRows[0].id, email.toLowerCase(), reason || null]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Blacklist error:", err);
+    res.status(500).json({ error: "Failed to add to blacklist" });
+  }
+});
+
+// ── DELETE /parks/:slug/blacklist/:email ──────────────────────────────────
+router.delete("/:slug/blacklist/:email", async (req, res) => {
+  const { slug, email } = req.params;
+  try {
+    const { rows: parkRows } = await db.query(`SELECT id FROM parks WHERE slug = $1`, [slug]);
+    if (!parkRows.length) return res.status(404).json({ error: "Park not found" });
+    await db.query(
+      `DELETE FROM blacklist WHERE park_id = $1 AND email = $2`,
+      [parkRows[0].id, decodeURIComponent(email).toLowerCase()]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to remove from blacklist" });
+  }
+});
+
+// ── GET /parks/:slug/returning-guest/:email ───────────────────────────────
+router.get("/:slug/returning-guest/:email", async (req, res) => {
+  const { slug, email } = req.params;
+  try {
+    const { rows: parkRows } = await db.query(`SELECT id FROM parks WHERE slug = $1`, [slug]);
+    if (!parkRows.length) return res.json({ returning: false });
+    const { rows } = await db.query(
+      `SELECT COUNT(*) AS visits FROM bookings b
+       JOIN spaces s ON s.id = b.space_id
+       WHERE s.park_id = $1
+         AND LOWER(b.guest_email) = $2
+         AND b.status IN ('confirmed','checked_in','checked_out')`,
+      [parkRows[0].id, decodeURIComponent(email).toLowerCase()]
+    );
+    const visits = parseInt(rows[0].visits);
+    res.json({ returning: visits > 0, visits });
+  } catch (err) {
+    res.json({ returning: false, visits: 0 });
+  }
+});
+
 module.exports = router;
