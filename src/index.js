@@ -23,6 +23,8 @@ const ALLOWED_ORIGINS = [
   "https://rollinhost.com",
   "http://www.rollinhost.com",
   "https://www.rollinhost.com",
+  "http://mustangcorner.com",
+  "https://mustangcorner.com",
   // Add client park domains here as you onboard them:
   // "https://mustangcornerrvpark.com",
 ];
