@@ -123,9 +123,10 @@ router.post("/:park_slug/ask", async (req, res) => {
 
     // ── Pull all park data from DB ──────────────────────────────────────
 
-    // Park info — only select columns we know exist
+    // Park info
     const parkRes = await db.query(
-      `SELECT id, name FROM parks WHERE slug = $1`, [park_slug]
+      `SELECT id, name, rate_nightly, rate_weekly, rate_monthly FROM parks WHERE slug = $1`,
+      [park_slug]
     );
     if (!parkRes.rows.length) return res.status(404).json({ error: "Park not found" });
     const park = parkRes.rows[0];
@@ -193,13 +194,12 @@ router.post("/:park_slug/ask", async (req, res) => {
       if (byType[t]) { byType[t].count++; byType[t].revenue += Number(b.total_charged || 0); }
     });
 
-    // Derive base rates from booking averages (rates column doesn't exist on parks table)
-    // Use known Mustang Corner defaults — these are set in the dashboard rate editor
-    const nightlyBookings = confirmed.filter(b => (b.rate_type||'nightly') === 'nightly');
-    const avgNightlyRate = nightlyBookings.length > 0
-      ? nightlyBookings.reduce((s,b) => s + Number(b.total_charged||0), 0) / nightlyBookings.reduce((s,b) => s + Number(b.nights||1), 0)
-      : 45;
-    const rates = { nightly: Math.round(avgNightlyRate) || 45, weekly: 270, monthly: 400 };
+    // Rates from parks table columns
+    const rates = {
+      nightly: Number(park.rate_nightly) || 45,
+      weekly:  Number(park.rate_weekly)  || 270,
+      monthly: Number(park.rate_monthly) || 400
+    };
 
     const bookingList = bookings.slice(0, 200).map(b =>
       `Space ${b.space_number} | ${b.guest_first_name} ${b.guest_last_name} | ${b.check_in} to ${b.check_out} | ${b.nights || "?"} nights | ${b.rate_type} | $${Number(b.total_charged||0).toFixed(2)} | ${b.status} | source: ${b.booking_source || "online"}`
