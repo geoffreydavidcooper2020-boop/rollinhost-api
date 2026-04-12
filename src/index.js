@@ -10,6 +10,7 @@ const parksRouter    = require("./routes/parks");
 const webhooksRouter = require("./routes/webhooks");
 const authRouter     = require("./routes/auth");
 const reportsRouter  = require("./routes/reports");
+require("./cron");
 
 const app = express();
 
