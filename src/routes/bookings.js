@@ -22,8 +22,10 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
-  if (!["nightly", "weekly", "monthly"].includes(rate_type)) {
-    return res.status(400).json({ error: "rate_type must be nightly, weekly, or monthly" });
+  // Walk-in bookings may use "cash" rate type — map to nightly for DB
+  const normalizedRateType = rate_type === "cash" ? "nightly" : rate_type;
+  if (!["nightly", "weekly", "monthly"].includes(normalizedRateType)) {
+    return res.status(400).json({ error: "rate_type must be nightly, weekly, monthly, or cash" });
   }
 
   const client = await db.connect();
@@ -88,12 +90,12 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "check_out must be after check_in" });
     }
 
-    // Rate calculation based on rate_type
+    // Rate calculation
     let nightlyRate, total;
-    if (rate_type === "weekly") {
+    if (normalizedRateType === "weekly") {
       nightlyRate = Number(park.rate_weekly) || Number(park.rate_nightly) * 7;
       total = Math.ceil(nights / 7) * nightlyRate;
-    } else if (rate_type === "monthly") {
+    } else if (normalizedRateType === "monthly") {
       nightlyRate = Number(park.rate_monthly) || Number(park.rate_nightly) * 30;
       total = Math.ceil(nights / 30) * nightlyRate;
     } else {
@@ -101,55 +103,96 @@ router.post("/", async (req, res) => {
       total = nightlyRate * nights;
     }
 
-    // Create Stripe payment intent (amount in cents)
-    if (!stripe) {
-      await client.query("ROLLBACK");
-      return res.status(503).json({ error: "Payment processing not configured" });
+    // Walk-in / cash bookings skip Stripe
+    const isWalkIn = booking_source === "walk_in" || rate_type === "cash";
+
+    if (!isWalkIn) {
+      // Online booking — require Stripe
+      if (!stripe) {
+        await client.query("ROLLBACK");
+        return res.status(503).json({ error: "Payment processing not configured" });
+      }
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: Math.round(total * 100),
+        currency: "usd",
+        metadata: {
+          park_slug,
+          space_number: String(space_number),
+          check_in,
+          check_out,
+          rate_type: normalizedRateType,
+        },
+      });
+
+      // Cancellation deadline: 72 hours from now
+      const cancellationDeadline = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+      // Insert booking as PENDING — webhook confirms after payment
+      const { rows: bookingRows } = await client.query(
+        `INSERT INTO bookings (
+           park_id, space_id,
+           guest_first_name, guest_last_name, guest_email, guest_phone,
+           check_in, check_out, rate_type, rate_amount, nights,
+           subtotal, total_charged, booking_source, space_number, status,
+           cancellation_deadline
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending',$16)
+         RETURNING id`,
+        [
+          park.id, space.id,
+          guest_first_name, guest_last_name, guest_email, guest_phone || null,
+          check_in, check_out, normalizedRateType, nightlyRate, nights,
+          total, total,
+          booking_source || "online", parseInt(space_number, 10),
+          cancellationDeadline
+        ]
+      );
+
+      await client.query(
+        `INSERT INTO payments (booking_id, park_id, stripe_payment_intent_id, amount, status)
+         VALUES ($1, $2, $3, $4, 'pending')`,
+        [bookingRows[0].id, park.id, paymentIntent.id, total]
+      );
+
+      await client.query("COMMIT");
+
+      return res.status(201).json({
+        booking_id: bookingRows[0].id,
+        client_secret: paymentIntent.client_secret,
+      });
+
+    } else {
+      // Walk-in / cash booking — no Stripe, insert as confirmed immediately
+      // Cancellation deadline: 72 hours from now
+      const cancellationDeadline = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+      const { rows: bookingRows } = await client.query(
+        `INSERT INTO bookings (
+           park_id, space_id,
+           guest_first_name, guest_last_name, guest_email, guest_phone,
+           check_in, check_out, rate_type, rate_amount, nights,
+           subtotal, total_charged, booking_source, space_number, status,
+           cancellation_deadline
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'confirmed',$16)
+         RETURNING id`,
+        [
+          park.id, space.id,
+          guest_first_name, guest_last_name, guest_email, guest_phone || null,
+          check_in, check_out, normalizedRateType, nightlyRate, nights,
+          total, total,
+          "walk_in", parseInt(space_number, 10),
+          cancellationDeadline
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      return res.status(201).json({
+        booking_id: bookingRows[0].id,
+        confirmed: true,
+      });
     }
 
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(total * 100),
-      currency: "usd",
-      metadata: {
-        park_slug,
-        space_number: String(space_number),
-        check_in,
-        check_out,
-        rate_type,
-      },
-    });
-
-    // Insert booking as PENDING — webhook confirms it after payment
-    const { rows: bookingRows } = await client.query(
-      `INSERT INTO bookings (
-         park_id, space_id,
-         guest_first_name, guest_last_name, guest_email, guest_phone,
-         check_in, check_out, rate_type, rate_amount, nights,
-         subtotal, total_charged, booking_source, space_number, status
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending')
-       RETURNING id`,
-      [
-        park.id, space.id,
-        guest_first_name, guest_last_name, guest_email, guest_phone || null,
-        check_in, check_out, rate_type, nightlyRate, nights,
-        total, total,
-        booking_source || "online", parseInt(space_number, 10)
-      ]
-    );
-
-    // Store payment intent in payments table
-    await client.query(
-      `INSERT INTO payments (booking_id, park_id, stripe_payment_intent_id, amount, status)
-       VALUES ($1, $2, $3, $4, 'pending')`,
-      [bookingRows[0].id, park.id, paymentIntent.id, total]
-    );
-
-    await client.query("COMMIT");
-
-    res.status(201).json({
-      booking_id: bookingRows[0].id,
-      client_secret: paymentIntent.client_secret,
-    });
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("Error creating booking:", err);
@@ -179,23 +222,67 @@ router.get("/", async (req, res) => {
 });
 
 // POST /bookings/:id/cancel
+// Within 72 hours of booking: full Stripe refund + cancel
+// After 72 hours: cancel reservation only, no refund (spot was held)
+// Dashboard override: owner can always cancel (no refund check)
 router.post("/:id/cancel", async (req, res) => {
+  const { override } = req.body; // owner dashboard passes override: true
   try {
     const { rows } = await db.query(
-      `UPDATE bookings SET status = 'cancelled', updated_at = NOW()
-       WHERE id = $1 AND status IN ('pending', 'confirmed')
-       RETURNING *`,
+      `SELECT b.*, p.stripe_payment_intent_id
+       FROM bookings b
+       LEFT JOIN payments p ON p.booking_id = b.id
+       WHERE b.id = $1 AND b.status IN ('pending', 'confirmed')`,
       [req.params.id]
     );
-    if (!rows.length) return res.status(404).json({ error: "Booking not found or already cancelled" });
-    res.json(rows[0]);
+    if (!rows.length) {
+      return res.status(404).json({ error: "Booking not found or already cancelled" });
+    }
+    const booking = rows[0];
+
+    // Determine if within cancellation window
+    const deadline = booking.cancellation_deadline ? new Date(booking.cancellation_deadline) : null;
+    const withinWindow = deadline ? new Date() < deadline : false;
+    const shouldRefund = withinWindow && !override;
+
+    // Cancel in DB
+    await db.query(
+      `UPDATE bookings SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+      [req.params.id]
+    );
+
+    // Attempt Stripe refund if within window
+    let refunded = false;
+    if (shouldRefund && stripe && booking.stripe_payment_intent_id) {
+      try {
+        await stripe.refunds.create({
+          payment_intent: booking.stripe_payment_intent_id,
+        });
+        refunded = true;
+        console.log(`Refund issued for booking ${req.params.id}`);
+      } catch (refundErr) {
+        console.error("Stripe refund failed:", refundErr.message);
+      }
+    }
+
+    res.json({
+      cancelled: true,
+      refunded,
+      within_window: withinWindow,
+      message: refunded
+        ? "Booking cancelled and full refund issued."
+        : withinWindow
+          ? "Booking cancelled. Refund could not be processed — contact support."
+          : "Booking cancelled. Cancellation window has passed — no refund issued."
+    });
+
   } catch (err) {
     console.error("Error cancelling booking:", err);
     res.status(500).json({ error: "Failed to cancel booking" });
   }
 });
 
-// POST /bookings/:id/checkin
+// POST /bookings/:id/checkin  (kept for manual override from dashboard)
 router.post("/:id/checkin", async (req, res) => {
   try {
     const { rows } = await db.query(
@@ -212,7 +299,7 @@ router.post("/:id/checkin", async (req, res) => {
   }
 });
 
-// POST /bookings/:id/checkout
+// POST /bookings/:id/checkout  (kept for manual override from dashboard)
 router.post("/:id/checkout", async (req, res) => {
   try {
     const { rows } = await db.query(
@@ -225,18 +312,15 @@ router.post("/:id/checkout", async (req, res) => {
     const booking = rows[0];
     res.json(booking);
 
-    // Send review request email (free feature — always on)
+    // Send review request email
     if (booking.guest_email && process.env.RESEND_API_KEY) {
       try {
-        // Get park info for the review link
         const { rows: spaceRows } = await db.query(
-          `SELECT p.name AS park_name, p.slug
-           FROM spaces s JOIN parks p ON p.id = s.park_id
-           WHERE s.id = $1`, [booking.space_id]
+          `SELECT p.name AS park_name FROM spaces s JOIN parks p ON p.id = s.park_id WHERE s.id = $1`,
+          [booking.space_id]
         );
         if (spaceRows.length) {
-          const { park_name, slug } = spaceRows[0];
-          const guestFirst = booking.guest_first_name || "there";
+          const { park_name } = spaceRows[0];
           const { Resend } = require("resend");
           const resend = new Resend(process.env.RESEND_API_KEY);
           await resend.emails.send({
@@ -245,7 +329,7 @@ router.post("/:id/checkout", async (req, res) => {
             subject: `How was your stay at ${park_name}?`,
             html: `
               <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
-                <h2 style="color:#1a0d04">Thanks for staying with us, ${guestFirst}!</h2>
+                <h2 style="color:#1a0d04">Thanks for staying with us, ${booking.guest_first_name || "there"}!</h2>
                 <p>We hope you had a wonderful stay at <strong>${park_name}</strong>.</p>
                 <p style="margin-top:12px">If you enjoyed your visit, we'd love it if you left us a quick review. It only takes a minute and means the world to a small, independent park like ours.</p>
                 <div style="text-align:center;margin:24px 0">
@@ -254,14 +338,13 @@ router.post("/:id/checkout", async (req, res) => {
                     ⭐ Leave a Google Review
                   </a>
                 </div>
-                <p style="color:#666;font-size:13px">We look forward to seeing you again soon!</p>
                 <p style="color:#aaa;font-size:11px;margin-top:24px">Powered by Roll In Host LLC · rollinhost.com</p>
               </div>
             `
           });
         }
       } catch (emailErr) {
-        console.error("Review request email failed:", emailErr.message);
+        console.error("Review email failed:", emailErr.message);
       }
     }
   } catch (err) {
