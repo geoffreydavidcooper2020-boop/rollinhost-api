@@ -11,7 +11,7 @@ const stripe = key && key !== "placeholder" ? new Stripe(key) : null;
 router.post("/", async (req, res) => {
   console.log("Received body:", JSON.stringify(req.body));
   const {
-    park_slug, space_number,
+    park_slug, space_number, space_display,
     guest_first_name, guest_last_name, guest_email, guest_phone,
     check_in, check_out,
     rate_type, booking_source,
@@ -134,9 +134,9 @@ router.post("/", async (req, res) => {
            park_id, space_id,
            guest_first_name, guest_last_name, guest_email, guest_phone,
            check_in, check_out, rate_type, rate_amount, nights,
-           subtotal, total_charged, booking_source, space_number, status,
+           subtotal, total_charged, booking_source, space_number, space_display, status,
            cancellation_deadline
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending',$16)
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'pending',$17)
          RETURNING id`,
         [
           park.id, space.id,
@@ -144,6 +144,7 @@ router.post("/", async (req, res) => {
           check_in, check_out, normalizedRateType, nightlyRate, nights,
           total, total,
           booking_source || "online", parseInt(space_number, 10),
+          space_display || null,
           cancellationDeadline
         ]
       );
@@ -163,7 +164,6 @@ router.post("/", async (req, res) => {
 
     } else {
       // Walk-in / cash booking — no Stripe, insert as confirmed immediately
-      // Cancellation deadline: 72 hours from now
       const cancellationDeadline = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
 
       const { rows: bookingRows } = await client.query(
@@ -171,9 +171,9 @@ router.post("/", async (req, res) => {
            park_id, space_id,
            guest_first_name, guest_last_name, guest_email, guest_phone,
            check_in, check_out, rate_type, rate_amount, nights,
-           subtotal, total_charged, booking_source, space_number, status,
+           subtotal, total_charged, booking_source, space_number, space_display, status,
            cancellation_deadline
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'confirmed',$16)
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'confirmed',$17)
          RETURNING id`,
         [
           park.id, space.id,
@@ -181,6 +181,7 @@ router.post("/", async (req, res) => {
           check_in, check_out, normalizedRateType, nightlyRate, nights,
           total, total,
           "walk_in", parseInt(space_number, 10),
+          space_display || null,
           cancellationDeadline
         ]
       );
@@ -222,11 +223,8 @@ router.get("/", async (req, res) => {
 });
 
 // POST /bookings/:id/cancel
-// Within 72 hours of booking: full Stripe refund + cancel
-// After 72 hours: cancel reservation only, no refund (spot was held)
-// Dashboard override: owner can always cancel (no refund check)
 router.post("/:id/cancel", async (req, res) => {
-  const { override } = req.body; // owner dashboard passes override: true
+  const { override } = req.body;
   try {
     const { rows } = await db.query(
       `SELECT b.*, p.stripe_payment_intent_id
@@ -240,18 +238,15 @@ router.post("/:id/cancel", async (req, res) => {
     }
     const booking = rows[0];
 
-    // Determine if within cancellation window
     const deadline = booking.cancellation_deadline ? new Date(booking.cancellation_deadline) : null;
     const withinWindow = deadline ? new Date() < deadline : false;
     const shouldRefund = withinWindow && !override;
 
-    // Cancel in DB
     await db.query(
       `UPDATE bookings SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
       [req.params.id]
     );
 
-    // Attempt Stripe refund if within window
     let refunded = false;
     if (shouldRefund && stripe && booking.stripe_payment_intent_id) {
       try {
@@ -282,7 +277,7 @@ router.post("/:id/cancel", async (req, res) => {
   }
 });
 
-// POST /bookings/:id/checkin  (kept for manual override from dashboard)
+// POST /bookings/:id/checkin
 router.post("/:id/checkin", async (req, res) => {
   try {
     const { rows } = await db.query(
@@ -299,7 +294,7 @@ router.post("/:id/checkin", async (req, res) => {
   }
 });
 
-// POST /bookings/:id/checkout  (kept for manual override from dashboard)
+// POST /bookings/:id/checkout
 router.post("/:id/checkout", async (req, res) => {
   try {
     const { rows } = await db.query(
