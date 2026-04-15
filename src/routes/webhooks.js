@@ -3,9 +3,7 @@ const Stripe = require("stripe");
 const db = require("../db");
 const { sendOwnerAlert } = require("../services/sms");
 const { sendConfirmationEmail } = require("../services/email");
-
 const router = Router();
-
 const key = process.env.STRIPE_SECRET_KEY;
 const stripe = key && key !== "placeholder" ? new Stripe(key) : null;
 
@@ -15,7 +13,6 @@ router.post("/stripe", async (req, res) => {
     console.log("Stripe not configured — skipping webhook");
     return res.status(503).json({ error: "Stripe not configured" });
   }
-
   let event;
   try {
     event = stripe.webhooks.constructEvent(
@@ -36,12 +33,10 @@ router.post("/stripe", async (req, res) => {
         `SELECT booking_id FROM payments WHERE stripe_payment_intent_id = $1`,
         [paymentIntent.id]
       );
-
       if (!paymentRows.length) {
         console.warn("No payment found for payment_intent:", paymentIntent.id);
         return res.json({ received: true });
       }
-
       const bookingId = paymentRows[0].booking_id;
 
       // Confirm the booking
@@ -51,12 +46,10 @@ router.post("/stripe", async (req, res) => {
          RETURNING *`,
         [bookingId]
       );
-
       if (!rows.length) {
         console.warn("No pending booking found for id:", bookingId);
         return res.json({ received: true });
       }
-
       const booking = rows[0];
 
       // Update payment status
@@ -67,19 +60,22 @@ router.post("/stripe", async (req, res) => {
 
       // Fetch space and park details
       const { rows: details } = await db.query(
-        `SELECT s.number AS space_name, p.name AS park_name, p.phone
+        `SELECT s.number AS space_number, p.name AS park_name, p.phone
          FROM spaces s
          JOIN parks p ON p.id = s.park_id
          WHERE s.id = $1`,
         [booking.space_id]
       );
-
       if (!details.length) {
         console.warn("No space/park found for booking:", bookingId);
         return res.json({ received: true });
       }
+      const { space_number, park_name, phone } = details[0];
 
-      const { space_name, park_name, phone } = details[0];
+      // Use space_display (e.g. "F13") if stored, fall back to raw number
+      const spaceName = booking.space_display
+        ? "Space " + booking.space_display
+        : "Space #" + space_number;
 
       // Build guest name
       const guestFirst = booking.guest_first_name || "";
@@ -92,7 +88,7 @@ router.post("/stripe", async (req, res) => {
         sendOwnerAlert({
           ownerPhone: phone,
           guestName,
-          spaceName: "Space #" + space_name,
+          spaceName,
           checkIn: booking.check_in,
           checkOut: booking.check_out,
           total: Math.round(total * 100),
@@ -100,21 +96,18 @@ router.post("/stripe", async (req, res) => {
         sendConfirmationEmail({
           guestEmail: booking.guest_email,
           guestName,
-          spaceName: "Space #" + space_name,
+          spaceName,
           parkName: park_name,
           checkIn: booking.check_in,
           checkOut: booking.check_out,
           total: Math.round(total * 100),
         }),
       ]);
-
       console.log(`Booking ${bookingId} confirmed — notifications sent`);
-
     } catch (err) {
       console.error("Error processing payment webhook:", err);
     }
   }
-
   res.json({ received: true });
 });
 
