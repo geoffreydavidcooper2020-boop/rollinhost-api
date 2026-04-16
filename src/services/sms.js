@@ -1,21 +1,27 @@
-const twilio = require("twilio");
+const { SignalHouseSDK } = require("@signalhousellc/sdk");
 
-const sid = process.env.TWILIO_ACCOUNT_SID;
-const client =
-  sid && sid !== "placeholder"
-    ? twilio(sid, process.env.TWILIO_AUTH_TOKEN)
-    : null;
+const client = process.env.SIGNAL_HOUSE_API_KEY
+  ? new SignalHouseSDK({
+      apiKey: process.env.SIGNAL_HOUSE_API_KEY,
+      baseUrl: "https://v2.signalhouse.io",
+    })
+  : null;
 
 async function sendOwnerAlert({ ownerPhone, guestName, spaceName, checkIn, checkOut, total }) {
   if (!client) {
-    console.log("Twilio not configured — skipping SMS to", ownerPhone);
+    console.log("Signal House not configured — skipping SMS to", ownerPhone);
     return;
   }
-  await client.messages.create({
-    body: `New booking! ${guestName} booked ${spaceName} from ${checkIn} to ${checkOut}. Total: $${(total / 100).toFixed(2)}`,
-    from: process.env.TWILIO_PHONE_NUMBER,
-    to: ownerPhone,
-  });
+  try {
+    await client.messages.sendSMS({
+      senderPhoneNumber: process.env.SIGNAL_HOUSE_PHONE_NUMBER,
+      recipientPhoneNumbers: [ownerPhone],
+      messageBody: `New booking! ${guestName} booked ${spaceName} from ${checkIn} to ${checkOut}. Total: $${(total / 100).toFixed(2)}`,
+    });
+    console.log("SMS sent to", ownerPhone);
+  } catch (err) {
+    console.error("Signal House SMS error:", err.message);
+  }
 }
 
 module.exports = { sendOwnerAlert };
