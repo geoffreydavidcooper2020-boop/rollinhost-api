@@ -71,18 +71,22 @@ async function runAutoCheckOut() {
         "SELECT p.name FROM spaces s JOIN parks p ON p.id = s.park_id WHERE s.id = $1",
         [booking.space_id]
       );
-      const parkName = sr[0] ? sr[0].name : "Mustang Corner RV Park";
-      try {
-        await resend.emails.send({
-          from: FROM_EMAIL,
-          to: booking.guest_email,
-          subject: "Thanks for staying at " + parkName + " — leave us a review?",
-          html: "<div style=\"font-family:sans-serif;max-width:560px;margin:0 auto\"><div style=\"background:#2c1810;padding:20px 24px;border-radius:8px 8px 0 0\"><div style=\"font-size:20px;font-weight:700;color:#e8d5b0\">Roll In Host</div><div style=\"font-size:12px;color:rgba(232,213,176,0.6);margin-top:2px\">" + parkName + "</div></div><div style=\"background:#fff;padding:28px 24px;border:1px solid #e0d8cc;border-top:none;border-radius:0 0 8px 8px\"><h2 style=\"color:#2c1810\">Thanks for your stay, " + booking.guest_first_name + "!</h2><p style=\"color:#555;line-height:1.7;margin-top:12px\">We hope you had a great time at <strong>" + parkName + "</strong>. If you enjoyed your visit, a quick Google review means the world to us.</p><div style=\"text-align:center;margin:28px 0\"><a href=\"https://www.google.com/search?q=" + encodeURIComponent(parkName + " RV Park") + "+reviews\" style=\"background:#2c1810;color:#e8d5b0;padding:13px 30px;border-radius:6px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block\">&#11088; Leave a Google Review</a></div><p style=\"color:#888;font-size:13px\">Questions? Call us at 928-951-2067.</p><p style=\"color:#aaa;font-size:11px;margin-top:24px;border-top:1px solid #f0ebe4;padding-top:16px\">" + parkName + " &middot; Powered by Roll In Host LLC &middot; rollinhost.com</p></div></div>"
-        });
-        console.log("[CRON] Review email sent to " + booking.guest_email);
-      } catch (e) {
-        console.error("[CRON] Review email failed:", e.message);
-      }
+      const parkName = sr[0] ? sr[0].name : "the park";
+
+      // Delay review email by 1 hour
+      setTimeout(async function() {
+        try {
+          await resend.emails.send({
+            from: FROM_EMAIL,
+            to: booking.guest_email,
+            subject: "Thanks for staying at " + parkName + " — leave us a review?",
+            html: "<div style=\"font-family:sans-serif;max-width:560px;margin:0 auto\"><div style=\"background:#2c1810;padding:20px 24px;border-radius:8px 8px 0 0\"><div style=\"font-size:20px;font-weight:700;color:#e8d5b0\">Roll In Host</div><div style=\"font-size:12px;color:rgba(232,213,176,0.6);margin-top:2px\">" + parkName + "</div></div><div style=\"background:#fff;padding:28px 24px;border:1px solid #e0d8cc;border-top:none;border-radius:0 0 8px 8px\"><h2 style=\"color:#2c1810\">Thanks for your stay, " + booking.guest_first_name + "!</h2><p style=\"color:#555;line-height:1.7;margin-top:12px\">We hope you had a great time at <strong>" + parkName + "</strong>. If you enjoyed your visit, a quick Google review means the world to us.</p><div style=\"text-align:center;margin:28px 0\"><a href=\"https://www.google.com/search?q=" + encodeURIComponent(parkName + " RV Park") + "+reviews\" style=\"background:#2c1810;color:#e8d5b0;padding:13px 30px;border-radius:6px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block\">&#11088; Leave a Google Review</a></div><p style=\"color:#aaa;font-size:11px;margin-top:24px;border-top:1px solid #f0ebe4;padding-top:16px\">" + parkName + " &middot; Powered by Roll In Host LLC &middot; rollinhost.com</p></div></div>"
+          });
+          console.log("[CRON] Review email sent to " + booking.guest_email);
+        } catch (e) {
+          console.error("[CRON] Review email failed:", e.message);
+        }
+      }, 60 * 60 * 1000); // 1 hour delay
     }
   } catch (err) {
     console.error("[CRON] Auto check-out error:", err.message);
@@ -94,8 +98,16 @@ async function runPreArrivalEmails() {
   const tomorrow = arizonaDateStr(1);
   console.log("[CRON] Pre-arrival emails for check-ins on " + tomorrow);
   try {
+    // Pull park address and phone from DB so it works for any park
     const { rows } = await db.query(
-      "SELECT b.id, b.guest_first_name, b.guest_last_name, b.guest_email, b.check_in, b.check_out, b.nights, s.number AS space_number, s.amp, p.name AS park_name FROM bookings b JOIN spaces s ON s.id = b.space_id JOIN parks p ON p.id = s.park_id WHERE b.status = 'confirmed' AND b.check_in = $1",
+      `SELECT b.id, b.guest_first_name, b.guest_last_name, b.guest_email,
+              b.check_in, b.check_out, b.nights, b.space_display,
+              s.number AS space_number, s.amp,
+              p.name AS park_name, p.address AS park_address, p.phone AS park_phone
+       FROM bookings b
+       JOIN spaces s ON s.id = b.space_id
+       JOIN parks p ON p.id = s.park_id
+       WHERE b.status = 'confirmed' AND b.check_in = $1`,
       [tomorrow]
     );
 
@@ -104,16 +116,23 @@ async function runPreArrivalEmails() {
 
     for (const b of rows) {
       if (!b.guest_email || b.guest_email.includes(".local")) continue;
+
+      const spaceLabel = b.space_display ? "Space " + b.space_display : "Space " + b.space_number;
+      const parkAddress = b.park_address || "304 E. HWY 82, Huachuca City, AZ 85616";
+      const parkPhone = b.park_phone || "928-951-2067";
+      const mapsUrl = "https://maps.google.com/?q=" + encodeURIComponent(parkAddress);
+
       const cin = new Date(b.check_in + "T12:00:00").toLocaleDateString("en-US", {weekday:"long",month:"long",day:"numeric",year:"numeric"});
       const cout = new Date(b.check_out + "T12:00:00").toLocaleDateString("en-US", {weekday:"long",month:"long",day:"numeric"});
+
       try {
         await resend.emails.send({
           from: FROM_EMAIL,
           to: b.guest_email,
           subject: "Your stay at " + b.park_name + " starts tomorrow — arrival info inside",
-          html: "<div style=\"font-family:sans-serif;max-width:560px;margin:0 auto\"><div style=\"background:#2c1810;padding:20px 24px;border-radius:8px 8px 0 0\"><div style=\"font-size:20px;font-weight:700;color:#e8d5b0\">Roll In Host</div><div style=\"font-size:12px;color:rgba(232,213,176,0.6);margin-top:2px\">" + b.park_name + "</div></div><div style=\"background:#fff;padding:28px 24px;border:1px solid #e0d8cc;border-top:none;border-radius:0 0 8px 8px\"><h2 style=\"color:#2c1810\">See you tomorrow, " + b.guest_first_name + "!</h2><p style=\"color:#555;line-height:1.7\">Your reservation at <strong>" + b.park_name + "</strong> starts tomorrow. Here's what you need.</p><div style=\"background:#f5f0eb;border-radius:8px;padding:18px;margin:20px 0\"><table style=\"width:100%;font-size:14px;border-collapse:collapse\"><tr><td style=\"color:#888;padding:6px 0;width:130px\">Your Space</td><td style=\"font-weight:700;color:#2c1810;padding:6px 0\">Space " + b.space_number + " &nbsp;&middot;&nbsp; " + b.amp + "A electric</td></tr><tr><td style=\"color:#888;padding:6px 0\">Check-in</td><td style=\"font-weight:700;color:#2c1810;padding:6px 0\">" + cin + "<br><span style=\"font-weight:400;font-size:13px;color:#666\">After 2:00 PM</span></td></tr><tr><td style=\"color:#888;padding:6px 0\">Check-out</td><td style=\"font-weight:700;color:#2c1810;padding:6px 0\">" + cout + "<br><span style=\"font-weight:400;font-size:13px;color:#666\">By 11:00 AM</span></td></tr><tr><td style=\"color:#888;padding:6px 0\">Stay</td><td style=\"font-weight:700;color:#2c1810;padding:6px 0\">" + b.nights + " night" + (b.nights !== 1 ? "s" : "") + "</td></tr></table></div><h3 style=\"color:#2c1810;font-size:15px\">&#128205; Address</h3><p style=\"color:#555\">304 E. HWY 82, Huachuca City, AZ 85616</p><a href=\"https://maps.google.com/?q=304+E+HWY+82+Huachuca+City+AZ+85616\" style=\"color:#2E8BC0;font-size:13px\">Open in Google Maps &rarr;</a><h3 style=\"color:#2c1810;font-size:15px;margin-top:20px\">&#128663; Arrival</h3><p style=\"color:#555;line-height:1.7\">Drive in and go directly to <strong>Space " + b.space_number + "</strong>. Full hookups at your site: water, sewer, and " + b.amp + "A electric.</p><h3 style=\"color:#2c1810;font-size:15px;margin-top:20px\">&#128222; Questions?</h3><p style=\"color:#555\">Call or text Willie at <a href=\"tel:9289512067\" style=\"color:#2E8BC0\">928-951-2067</a>.</p><p style=\"color:#aaa;font-size:11px;margin-top:28px;border-top:1px solid #f0ebe4;padding-top:16px\">" + b.park_name + " &middot; 304 E. HWY 82, Huachuca City, AZ 85616<br>Powered by Roll In Host LLC &middot; rollinhost.com</p></div></div>"
+          html: "<div style=\"font-family:sans-serif;max-width:560px;margin:0 auto\"><div style=\"background:#2c1810;padding:20px 24px;border-radius:8px 8px 0 0\"><div style=\"font-size:20px;font-weight:700;color:#e8d5b0\">Roll In Host</div><div style=\"font-size:12px;color:rgba(232,213,176,0.6);margin-top:2px\">" + b.park_name + "</div></div><div style=\"background:#fff;padding:28px 24px;border:1px solid #e0d8cc;border-top:none;border-radius:0 0 8px 8px\"><h2 style=\"color:#2c1810\">See you tomorrow, " + b.guest_first_name + "!</h2><p style=\"color:#555;line-height:1.7\">Your reservation at <strong>" + b.park_name + "</strong> starts tomorrow. Here's what you need.</p><div style=\"background:#f5f0eb;border-radius:8px;padding:18px;margin:20px 0\"><table style=\"width:100%;font-size:14px;border-collapse:collapse\"><tr><td style=\"color:#888;padding:6px 0;width:130px\">Your Space</td><td style=\"font-weight:700;color:#2c1810;padding:6px 0\">" + spaceLabel + " &nbsp;&middot;&nbsp; " + b.amp + "A electric</td></tr><tr><td style=\"color:#888;padding:6px 0\">Check-in</td><td style=\"font-weight:700;color:#2c1810;padding:6px 0\">" + cin + "<br><span style=\"font-weight:400;font-size:13px;color:#666\">After 2:00 PM</span></td></tr><tr><td style=\"color:#888;padding:6px 0\">Check-out</td><td style=\"font-weight:700;color:#2c1810;padding:6px 0\">" + cout + "<br><span style=\"font-weight:400;font-size:13px;color:#666\">By 11:00 AM</span></td></tr><tr><td style=\"color:#888;padding:6px 0\">Stay</td><td style=\"font-weight:700;color:#2c1810;padding:6px 0\">" + b.nights + " night" + (b.nights !== 1 ? "s" : "") + "</td></tr></table></div><h3 style=\"color:#2c1810;font-size:15px\">&#128205; Address</h3><p style=\"color:#555\">" + parkAddress + "</p><a href=\"" + mapsUrl + "\" style=\"color:#2E8BC0;font-size:13px\">Open in Google Maps &rarr;</a><h3 style=\"color:#2c1810;font-size:15px;margin-top:20px\">&#128663; Arrival</h3><p style=\"color:#555;line-height:1.7\">Drive in and go directly to <strong>" + spaceLabel + "</strong>. Full hookups at your site: water, sewer, and " + b.amp + "A electric.</p><h3 style=\"color:#2c1810;font-size:15px;margin-top:20px\">&#128222; Questions?</h3><p style=\"color:#555\">Call or text the park at <a href=\"tel:" + parkPhone.replace(/\D/g,'') + "\" style=\"color:#2E8BC0\">" + parkPhone + "</a>.</p><p style=\"color:#aaa;font-size:11px;margin-top:28px;border-top:1px solid #f0ebe4;padding-top:16px\">" + b.park_name + " &middot; " + parkAddress + "<br>Powered by Roll In Host LLC &middot; rollinhost.com</p></div></div>"
         });
-        console.log("[CRON] Pre-arrival email sent to " + b.guest_email + " Space " + b.space_number);
+        console.log("[CRON] Pre-arrival email sent to " + b.guest_email + " " + spaceLabel);
       } catch (e) {
         console.error("[CRON] Pre-arrival email failed:", e.message);
       }
@@ -126,7 +145,7 @@ async function runPreArrivalEmails() {
 // ── Job 4: Trial Warning (7 days before expiry) ───────────────────────────
 async function runTrialWarnings() {
   const today = arizonaDateStr();
-  const targetStartDate = addDaysToDate(today, -(120 - 7)); // parks that started 113 days ago expire in 7 days
+  const targetStartDate = addDaysToDate(today, -(120 - 7));
   console.log("[CRON] Trial warning check for start date " + targetStartDate);
   try {
     const { rows: parks } = await db.query(
@@ -139,7 +158,6 @@ async function runTrialWarnings() {
       const expiryDate = addDaysToDate(park.trial_start_date, 120);
       const expiryNice = new Date(expiryDate + "T12:00:00").toLocaleDateString("en-US", {weekday:"long",month:"long",day:"numeric",year:"numeric"});
 
-      // Internal alert to Geoffrey
       await resend.emails.send({
         from: FROM_EMAIL,
         to: SUPPORT_EMAIL,
@@ -147,13 +165,12 @@ async function runTrialWarnings() {
         html: "<p><strong>" + park.name + "</strong> (" + park.slug + ") has 7 days left on their founding trial.</p><p>Expires: <strong>" + expiryNice + "</strong></p><p>Follow up to arrange payment.</p>"
       }).catch(function(e){ console.error("[CRON] Internal trial warning failed:", e.message); });
 
-      // Warm email to park owner if email on file
       if (park.email) {
         await resend.emails.send({
           from: FROM_EMAIL,
           to: park.email,
           subject: "Your RollinHost trial ends in one week — here's what happens next",
-          html: "<div style=\"font-family:sans-serif;max-width:560px;margin:0 auto\"><div style=\"background:#2c1810;padding:20px 24px;border-radius:8px 8px 0 0\"><div style=\"font-size:20px;font-weight:700;color:#e8d5b0\">Roll In Host</div></div><div style=\"background:#fff;padding:28px 24px;border:1px solid #e0d8cc;border-top:none;border-radius:0 0 8px 8px\"><h2 style=\"color:#2c1810\">Your founding trial ends in one week</h2><p style=\"color:#555;line-height:1.7\">Hi there — your 4-month founding trial for <strong>" + park.name + "</strong> ends on <strong>" + expiryNice + "</strong>.</p><p style=\"color:#555;line-height:1.7;margin-top:12px\">We've loved having you as a founding park. Continuing is simple — your rate is locked at <strong>$99/month</strong> forever, exactly as promised.</p><div style=\"background:#f5f0eb;border-radius:8px;padding:18px;margin:24px 0\"><div style=\"font-weight:700;color:#2c1810;margin-bottom:8px\">What stays active after your trial:</div><p style=\"color:#555;font-size:14px;line-height:1.8;margin:0\">&#10003; Your booking system<br>&#10003; All your guest data<br>&#10003; Every feature<br>&#10003; Your $99/month rate locked forever</p></div><p style=\"color:#555;line-height:1.7\">Just give us a call or reply to this email and we'll get your payment set up in minutes.</p><div style=\"text-align:center;margin:28px 0\"><a href=\"tel:6267655461\" style=\"background:#2c1810;color:#e8d5b0;padding:13px 30px;border-radius:6px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block\">&#128222; Call 626-ROLLIN1</a></div><p style=\"color:#555\">Thank you for being a founding park. It genuinely means a lot to us.</p><p style=\"color:#555\">— Geoffrey<br><span style=\"color:#888;font-size:13px\">Roll In Host LLC &middot; " + SUPPORT_PHONE + "</span></p><p style=\"color:#aaa;font-size:11px;margin-top:24px;border-top:1px solid #f0ebe4;padding-top:16px\">Roll In Host LLC &middot; rollinhost.com &middot; " + SUPPORT_EMAIL + "</p></div></div>"
+          html: "<div style=\"font-family:sans-serif;max-width:560px;margin:0 auto\"><div style=\"background:#2c1810;padding:20px 24px;border-radius:8px 8px 0 0\"><div style=\"font-size:20px;font-weight:700;color:#e8d5b0\">Roll In Host</div></div><div style=\"background:#fff;padding:28px 24px;border:1px solid #e0d8cc;border-top:none;border-radius:0 0 8px 8px\"><h2 style=\"color:#2c1810\">Your founding trial ends in one week</h2><p style=\"color:#555;line-height:1.7\">Hi there — your 4-month founding trial for <strong>" + park.name + "</strong> ends on <strong>" + expiryNice + "</strong>.</p><p style=\"color:#555;line-height:1.7;margin-top:12px\">We've loved having you as a founding park. Continuing is simple — your rate is locked at <strong>$99/month</strong> forever, exactly as promised.</p><div style=\"background:#f5f0eb;border-radius:8px;padding:18px;margin:24px 0\"><div style=\"font-weight:700;color:#2c1810;margin-bottom:8px\">What stays active after your trial:</div><p style=\"color:#555;font-size:14px;line-height:1.8;margin:0\">&#10003; Your booking system<br>&#10003; All your guest data<br>&#10003; Every feature<br>&#10003; Your $99/month rate locked forever</p></div><p style=\"color:#555;line-height:1.7\">Just give us a call or reply to this email and we'll get your payment set up in minutes.</p><div style=\"text-align:center;margin:28px 0\"><a href=\"tel:6267655461\" style=\"background:#2c1810;color:#e8d5b0;padding:13px 30px;border-radius:6px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block\">&#128222; Call 626-ROLLIN1</a></div><p style=\"color:#555\">Thank you for being a founding park.</p><p style=\"color:#555\">— Geoffrey<br><span style=\"color:#888;font-size:13px\">Roll In Host LLC &middot; " + SUPPORT_PHONE + "</span></p><p style=\"color:#aaa;font-size:11px;margin-top:24px;border-top:1px solid #f0ebe4;padding-top:16px\">Roll In Host LLC &middot; rollinhost.com &middot; " + SUPPORT_EMAIL + "</p></div></div>"
         }).catch(function(e){ console.error("[CRON] Park trial warning email failed:", e.message); });
         console.log("[CRON] Trial warning sent to " + park.email + " for " + park.name);
       }
@@ -163,7 +180,7 @@ async function runTrialWarnings() {
   }
 }
 
-// ── Job 5: Trial Expiry — Disable Bookings ────────────────────────────────
+// ── Job 5: Trial Expiry ───────────────────────────────────────────────────
 async function runTrialExpiry() {
   const today = arizonaDateStr();
   const targetStartDate = addDaysToDate(today, -120);
