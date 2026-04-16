@@ -3,7 +3,6 @@ const express    = require("express");
 const cors       = require("cors");
 const helmet     = require("helmet");
 const rateLimit  = require("express-rate-limit");
-
 const spacesRouter   = require("./routes/spaces");
 const bookingsRouter = require("./routes/bookings");
 const parksRouter    = require("./routes/parks");
@@ -13,7 +12,6 @@ const reportsRouter  = require("./routes/reports");
 require("./cron");
 
 const app = express();
-
 app.use(helmet());
 app.set("trust proxy", 1);
 
@@ -32,7 +30,6 @@ const ALLOWED_ORIGINS = [
 
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
     if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
     callback(new Error("Not allowed by CORS"));
@@ -50,6 +47,57 @@ app.use(
 // Stripe webhooks need raw body — must be before express.json()
 app.use("/webhooks", express.raw({ type: "application/json" }));
 app.use(express.json());
+
+// ── SCRAPE PROXY ──────────────────────────────────────────────────────────────
+app.post("/scrape", async (req, res) => {
+  const { url, prompt } = req.body;
+  if (!url || !prompt) {
+    return res.status(400).json({ error: "url and prompt are required" });
+  }
+  try {
+    const fetch = (await import("node-fetch")).default;
+
+    let siteContent = "";
+    try {
+      const siteRes = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; RollinHostBot/1.0)" },
+        timeout: 10000
+      });
+      siteContent = await siteRes.text();
+      siteContent = siteContent.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 8000);
+    } catch (e) {
+      siteContent = "Could not fetch site content: " + e.message;
+    }
+
+    const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: "claude-opus-4-5",
+        max_tokens: 2000,
+        messages: [{
+          role: "user",
+          content: prompt + "\n\nSite content:\n" + siteContent
+        }]
+      })
+    });
+
+    const claudeData = await claudeRes.json();
+    const text = claudeData.content && claudeData.content[0] && claudeData.content[0].text
+      ? claudeData.content[0].text
+      : "";
+
+    res.json({ result: text });
+  } catch (err) {
+    console.error("Scrape proxy error:", err);
+    res.status(500).json({ error: "Scrape failed: " + err.message });
+  }
+});
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Routes
 app.use("/spaces",   spacesRouter);
