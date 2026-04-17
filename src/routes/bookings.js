@@ -22,7 +22,6 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
-  // Walk-in bookings may use "cash" rate type — map to nightly for DB
   const normalizedRateType = rate_type === "cash" ? "nightly" : rate_type;
   if (!["nightly", "weekly", "monthly"].includes(normalizedRateType)) {
     return res.status(400).json({ error: "rate_type must be nightly, weekly, monthly, or cash" });
@@ -32,9 +31,9 @@ router.post("/", async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // Look up park
+    // Look up park — include stripe_account_id for Connect
     const { rows: parkRows } = await client.query(
-      "SELECT id, rate_nightly, rate_weekly, rate_monthly FROM parks WHERE slug = $1",
+      "SELECT id, rate_nightly, rate_weekly, rate_monthly, stripe_account_id, name, address, phone FROM parks WHERE slug = $1",
       [park_slug]
     );
     if (!parkRows.length) {
@@ -103,32 +102,43 @@ router.post("/", async (req, res) => {
       total = nightlyRate * nights;
     }
 
-    // Walk-in / cash bookings skip Stripe
     const isWalkIn = booking_source === "walk_in" || rate_type === "cash";
 
     if (!isWalkIn) {
-      // Online booking — require Stripe
+      // Online booking — use Stripe Connect if park has a connected account
       if (!stripe) {
         await client.query("ROLLBACK");
         return res.status(503).json({ error: "Payment processing not configured" });
       }
 
-      const paymentIntent = await stripe.paymentIntents.create({
+      // Build payment intent params
+      const intentParams = {
         amount: Math.round(total * 100),
         currency: "usd",
         metadata: {
           park_slug,
           space_number: String(space_number),
+          space_display: space_display || String(space_number),
           check_in,
           check_out,
           rate_type: normalizedRateType,
+          guest_name: `${guest_first_name} ${guest_last_name}`,
+          guest_email,
         },
-      });
+      };
 
-      // Cancellation deadline: 72 hours from now
+      // If park has a Stripe Connect account, route payment directly to them
+      if (park.stripe_account_id) {
+        intentParams.transfer_data = {
+          destination: park.stripe_account_id,
+        };
+        console.log(`Routing payment to park Connect account: ${park.stripe_account_id}`);
+      }
+
+      const paymentIntent = await stripe.paymentIntents.create(intentParams);
+
       const cancellationDeadline = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
 
-      // Insert booking as PENDING — webhook confirms after payment
       const { rows: bookingRows } = await client.query(
         `INSERT INTO bookings (
            park_id, space_id,
@@ -163,7 +173,7 @@ router.post("/", async (req, res) => {
       });
 
     } else {
-      // Walk-in / cash booking — no Stripe, insert as confirmed immediately
+      // Walk-in / cash booking — confirmed immediately, no Stripe
       const cancellationDeadline = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
 
       const { rows: bookingRows } = await client.query(
@@ -193,19 +203,15 @@ router.post("/", async (req, res) => {
         try {
           const { Resend } = require("resend");
           const resend = new Resend(process.env.RESEND_API_KEY);
-          const { rows: parkNameRows } = await db.query(
-            "SELECT name, address, phone FROM parks WHERE id = $1", [park.id]
-          );
-          const parkInfo = parkNameRows[0] || {};
           const displaySpace = space_display || space_number;
           await resend.emails.send({
             from: process.env.RESEND_FROM_EMAIL || "reservations@rollinhost.com",
             to: guest_email,
-            subject: `Booking Confirmed — Space ${displaySpace} at ${parkInfo.name}`,
+            subject: `Booking Confirmed — Space ${displaySpace} at ${park.name}`,
             html: `
               <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
                 <h2 style="color:#1a0d04">You're confirmed, ${guest_first_name}!</h2>
-                <p>Your space at <strong>${parkInfo.name}</strong> has been reserved.</p>
+                <p>Your space at <strong>${park.name}</strong> has been reserved.</p>
                 <div style="background:#f5eed8;border-radius:8px;padding:16px;margin:20px 0">
                   <p><strong>Space:</strong> ${displaySpace}</p>
                   <p><strong>Check-in:</strong> ${check_in}</p>
@@ -214,8 +220,8 @@ router.post("/", async (req, res) => {
                   <p><strong>Total:</strong> $${total.toFixed(2)}</p>
                   <p><strong>Rate type:</strong> ${rate_type}</p>
                 </div>
-                ${parkInfo.address ? `<p><strong>Address:</strong> ${parkInfo.address}</p>` : ''}
-                ${parkInfo.phone ? `<p><strong>Phone:</strong> ${parkInfo.phone}</p>` : ''}
+                ${park.address ? `<p><strong>Address:</strong> ${park.address}</p>` : ''}
+                ${park.phone ? `<p><strong>Phone:</strong> ${park.phone}</p>` : ''}
                 <p style="color:#aaa;font-size:11px;margin-top:24px">Powered by Roll In Host LLC · rollinhost.com</p>
               </div>
             `
