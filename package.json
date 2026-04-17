@@ -19,6 +19,6 @@
     "pg": "^8.13.1",
     "resend": "^4.1.2",
     "stripe": "^17.5.0",
-    "twilio": "^5.4.3"
+    "@signalhousellc/sdk": "^1.0.0"
   }
 }
