@@ -3,6 +3,8 @@ const express    = require("express");
 const cors       = require("cors");
 const helmet     = require("helmet");
 const rateLimit  = require("express-rate-limit");
+const Stripe     = require("stripe");
+const db         = require("./db");
 const spacesRouter   = require("./routes/spaces");
 const bookingsRouter = require("./routes/bookings");
 const parksRouter    = require("./routes/parks");
@@ -14,6 +16,9 @@ require("./cron");
 const app = express();
 app.use(helmet());
 app.set("trust proxy", 1);
+
+const key = process.env.STRIPE_SECRET_KEY;
+const stripe = key && key !== "placeholder" ? new Stripe(key) : null;
 
 const ALLOWED_ORIGINS = [
   "http://geoffreyc35.sg-host.com",
@@ -97,6 +102,94 @@ app.post("/scrape", async (req, res) => {
     res.status(500).json({ error: "Scrape failed: " + err.message });
   }
 });
+
+// ── STRIPE CONNECT — Onboarding ───────────────────────────────────────────────
+// GET /connect/onboard/:park_slug
+// Generates a Stripe Connect onboarding link for a park owner
+// Send this link to the park owner — they complete Stripe's onboarding in minutes
+app.get("/connect/onboard/:park_slug", async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
+
+  try {
+    const { rows } = await db.query(
+      "SELECT id, name, stripe_account_id FROM parks WHERE slug = $1",
+      [req.params.park_slug]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Park not found" });
+    const park = rows[0];
+
+    let accountId = park.stripe_account_id;
+
+    // Create a new Connect account if park doesn't have one yet
+    if (!accountId) {
+      const account = await stripe.accounts.create({
+        type: "express",
+        metadata: { park_slug: req.params.park_slug, park_name: park.name }
+      });
+      accountId = account.id;
+
+      // Save the account ID to the park
+      await db.query(
+        "UPDATE parks SET stripe_account_id = $1 WHERE id = $2",
+        [accountId, park.id]
+      );
+      console.log(`Created Stripe Connect account ${accountId} for park ${park.name}`);
+    }
+
+    // Generate onboarding link
+    const accountLink = await stripe.accountLinks.create({
+      account: accountId,
+      refresh_url: `https://rollinhost.com/connect/refresh/${req.params.park_slug}`,
+      return_url: `https://rollinhost.com/connect/success/${req.params.park_slug}`,
+      type: "account_onboarding",
+    });
+
+    res.json({
+      onboarding_url: accountLink.url,
+      account_id: accountId,
+      park: park.name,
+      message: `Send this URL to ${park.name} — they complete Stripe onboarding in ~2 minutes`
+    });
+
+  } catch (err) {
+    console.error("Connect onboarding error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /connect/status/:park_slug — check if park has Connect set up
+app.get("/connect/status/:park_slug", async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      "SELECT name, stripe_account_id FROM parks WHERE slug = $1",
+      [req.params.park_slug]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Park not found" });
+    const park = rows[0];
+
+    if (!park.stripe_account_id) {
+      return res.json({ connected: false, park: park.name, message: "No Stripe account connected" });
+    }
+
+    // Check account status with Stripe
+    if (stripe) {
+      const account = await stripe.accounts.retrieve(park.stripe_account_id);
+      return res.json({
+        connected: true,
+        park: park.name,
+        account_id: park.stripe_account_id,
+        charges_enabled: account.charges_enabled,
+        payouts_enabled: account.payouts_enabled,
+        details_submitted: account.details_submitted,
+        ready: account.charges_enabled && account.payouts_enabled
+      });
+    }
+
+    res.json({ connected: true, account_id: park.stripe_account_id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Routes
@@ -110,7 +203,7 @@ app.use("/reports",  reportsRouter);
 // Health check
 app.get("/health", (_req, res) => res.json({
   status: "ok",
-  version: "1.1.0",
+  version: "1.2.0",
   timestamp: new Date().toISOString()
 }));
 
@@ -125,5 +218,5 @@ app.use((err, _req, res, _next) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`RollInHost API v1.1.0 listening on port ${PORT}`);
+  console.log(`RollInHost API v1.2.0 listening on port ${PORT}`);
 });
