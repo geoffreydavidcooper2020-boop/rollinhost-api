@@ -90,14 +90,14 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "check_out must be after check_in" });
     }
 
-    // Rate calculation
+    // Rate calculation — weekly = pkg/7 * nights, monthly = pkg/30 * nights
     let nightlyRate, total;
     if (normalizedRateType === "weekly") {
       nightlyRate = Number(park.rate_weekly) || Number(park.rate_nightly) * 7;
-      total = Math.ceil(nights / 7) * nightlyRate;
+      total = (nightlyRate / 7) * nights;
     } else if (normalizedRateType === "monthly") {
       nightlyRate = Number(park.rate_monthly) || Number(park.rate_nightly) * 30;
-      total = Math.ceil(nights / 30) * nightlyRate;
+      total = (nightlyRate / 30) * nights;
     } else {
       nightlyRate = Number(park.rate_nightly);
       total = nightlyRate * nights;
@@ -187,6 +187,44 @@ router.post("/", async (req, res) => {
       );
 
       await client.query("COMMIT");
+
+      // Send confirmation email for walk-in bookings
+      if (guest_email && !guest_email.includes('.local') && process.env.RESEND_API_KEY) {
+        try {
+          const { Resend } = require("resend");
+          const resend = new Resend(process.env.RESEND_API_KEY);
+          const { rows: parkNameRows } = await db.query(
+            "SELECT name, address, phone FROM parks WHERE id = $1", [park.id]
+          );
+          const parkInfo = parkNameRows[0] || {};
+          const displaySpace = space_display || space_number;
+          await resend.emails.send({
+            from: process.env.RESEND_FROM_EMAIL || "reservations@rollinhost.com",
+            to: guest_email,
+            subject: `Booking Confirmed — Space ${displaySpace} at ${parkInfo.name}`,
+            html: `
+              <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+                <h2 style="color:#1a0d04">You're confirmed, ${guest_first_name}!</h2>
+                <p>Your space at <strong>${parkInfo.name}</strong> has been reserved.</p>
+                <div style="background:#f5eed8;border-radius:8px;padding:16px;margin:20px 0">
+                  <p><strong>Space:</strong> ${displaySpace}</p>
+                  <p><strong>Check-in:</strong> ${check_in}</p>
+                  <p><strong>Check-out:</strong> ${check_out}</p>
+                  <p><strong>Nights:</strong> ${nights}</p>
+                  <p><strong>Total:</strong> $${total.toFixed(2)}</p>
+                  <p><strong>Rate type:</strong> ${rate_type}</p>
+                </div>
+                ${parkInfo.address ? `<p><strong>Address:</strong> ${parkInfo.address}</p>` : ''}
+                ${parkInfo.phone ? `<p><strong>Phone:</strong> ${parkInfo.phone}</p>` : ''}
+                <p style="color:#aaa;font-size:11px;margin-top:24px">Powered by Roll In Host LLC · rollinhost.com</p>
+              </div>
+            `
+          });
+          console.log(`Walk-in confirmation email sent to ${guest_email}`);
+        } catch (emailErr) {
+          console.error("Walk-in confirmation email failed:", emailErr.message);
+        }
+      }
 
       return res.status(201).json({
         booking_id: bookingRows[0].id,
