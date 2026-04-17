@@ -1,6 +1,11 @@
-const { SignalHouseSDK } = require("@signalhousellc/sdk");
+let SignalHouseSDK;
+try {
+  ({ SignalHouseSDK } = require("@signalhousellc/sdk"));
+} catch(e) {
+  console.warn("Signal House SDK not available:", e.message);
+}
 
-const client = process.env.SIGNAL_HOUSE_API_KEY
+const client = SignalHouseSDK && process.env.SIGNAL_HOUSE_API_KEY
   ? new SignalHouseSDK({
       apiKey: process.env.SIGNAL_HOUSE_API_KEY,
       baseUrl: "https://v2.signalhouse.io",
