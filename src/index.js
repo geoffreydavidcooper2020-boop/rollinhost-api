@@ -54,6 +54,10 @@ app.use("/webhooks", express.raw({ type: "application/json" }));
 app.use(express.json());
 
 // ── SCRAPE PROXY ──────────────────────────────────────────────────────────────
+// Fetches the target site's HTML directly, then sends it to Claude with the
+// web_search tool enabled so Claude can also research the park online (nearby
+// attractions, reviews, etc.). Returns both `result` (legacy plain text) and
+// `content` (full Anthropic response blocks) so ops.html v2 can read either.
 app.post("/scrape", async (req, res) => {
   const { url, prompt } = req.body;
   if (!url || !prompt) {
@@ -62,6 +66,7 @@ app.post("/scrape", async (req, res) => {
   try {
     const fetch = (await import("node-fetch")).default;
 
+    // Fetch the park's site HTML directly
     let siteContent = "";
     try {
       const siteRes = await fetch(url, {
@@ -69,11 +74,18 @@ app.post("/scrape", async (req, res) => {
         timeout: 10000
       });
       siteContent = await siteRes.text();
-      siteContent = siteContent.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 8000);
+      siteContent = siteContent
+        .replace(/<script[\s\S]*?<\/script>/gi, " ") // drop scripts first
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")   // drop style blocks
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 15000);
     } catch (e) {
       siteContent = "Could not fetch site content: " + e.message;
     }
 
+    // Call Anthropic with web_search tool enabled
     const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -82,21 +94,34 @@ app.post("/scrape", async (req, res) => {
         "anthropic-version": "2023-06-01"
       },
       body: JSON.stringify({
-        model: "claude-opus-4-5",
-        max_tokens: 2000,
+        model: "claude-sonnet-4-5-20250929",
+        max_tokens: 8000,
+        tools: [{
+          type: "web_search_20250305",
+          name: "web_search",
+          max_uses: 6
+        }],
         messages: [{
           role: "user",
-          content: prompt + "\n\nSite content:\n" + siteContent
+          content: prompt + "\n\n=== RAW SITE CONTENT (already fetched for you) ===\n" + siteContent
         }]
       })
     });
 
     const claudeData = await claudeRes.json();
-    const text = claudeData.content && claudeData.content[0] && claudeData.content[0].text
-      ? claudeData.content[0].text
-      : "";
 
-    res.json({ result: text });
+    // Claude may return multiple block types: text, server_tool_use, web_search_tool_result.
+    // Pull just the text blocks for the legacy `result` field.
+    const textBlocks = (claudeData.content || [])
+      .filter(b => b.type === "text" && b.text)
+      .map(b => b.text);
+    const text = textBlocks.join("\n\n");
+
+    // Return both shapes — legacy callers get `result`, new ops.html reads `content`
+    res.json({
+      result: text,
+      content: claudeData.content || []
+    });
   } catch (err) {
     console.error("Scrape proxy error:", err);
     res.status(500).json({ error: "Scrape failed: " + err.message });
