@@ -30,7 +30,9 @@ const ALLOWED_ORIGINS = [
   "http://mustangcorner.com",
   "https://mustangcorner.com",
   "http://geoffreyc37.sg-host.com",
-  "https://geoffreyc37.sg-host.com"
+  "https://geoffreyc37.sg-host.com",
+  "http://geoffreyc38.sg-host.com",
+  "https://geoffreyc38.sg-host.com"
 ];
 
 app.use(cors({
