@@ -20,7 +20,7 @@ router.get("/", async (req, res) => {
        INNER JOIN parks p ON p.id = s.park_id
        LEFT JOIN bookings b
          ON b.space_id = s.id
-         AND b.status IN ('confirmed', 'pending')
+         AND b.status IN ('confirmed', 'pending', 'checked_in')
          AND b.check_in < $3
          AND b.check_out > $2
        WHERE p.slug = $1
@@ -51,7 +51,7 @@ router.get("/:id/availability", async (req, res) => {
       `SELECT COUNT(*) AS conflicts
        FROM bookings
        WHERE space_id = $1
-         AND status IN ('confirmed', 'pending')
+         AND status IN ('confirmed', 'pending', 'checked_in')
          AND check_in < $3
          AND check_out > $2`,
       [id, check_in, check_out]
@@ -78,7 +78,7 @@ router.get("/:parkSlug/:spaceNumber/calendar", async (req, res) => {
        JOIN parks p ON p.id = s.park_id
        WHERE p.slug = $1
          AND s.number = $2
-         AND b.status IN ('confirmed', 'pending')
+         AND b.status IN ('confirmed', 'pending', 'checked_in')
          AND b.check_out >= CURRENT_DATE
        ORDER BY b.check_in`,
       [parkSlug, parseInt(spaceNumber, 10)]
