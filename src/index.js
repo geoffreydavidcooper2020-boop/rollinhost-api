@@ -11,6 +11,11 @@ const parksRouter    = require("./routes/parks");
 const webhooksRouter = require("./routes/webhooks");
 const authRouter     = require("./routes/auth");
 const reportsRouter  = require("./routes/reports");
+const tenanciesRouter        = require("./routes/tenancies");
+const ticketsRouter          = require("./routes/tickets");
+const expensesRouter         = require("./routes/expenses");
+const meterReadingsRouter    = require("./routes/meterReadings");
+const jurisdictionRulesRouter = require("./routes/jurisdictionRules");
 require("./cron");
 
 const app = express();
@@ -226,11 +231,16 @@ app.use("/parks",    parksRouter);
 app.use("/webhooks", webhooksRouter);
 app.use("/auth",     authRouter);
 app.use("/reports",  reportsRouter);
+app.use("/tenancies",          tenanciesRouter);
+app.use("/tickets",            ticketsRouter);
+app.use("/expenses",           expensesRouter);
+app.use("/meter-readings",     meterReadingsRouter);
+app.use("/jurisdiction-rules", jurisdictionRulesRouter);
 
 // Health check
 app.get("/health", (_req, res) => res.json({
   status: "ok",
-  version: "1.2.0",
+  version: "1.3.0",
   timestamp: new Date().toISOString()
 }));
 
