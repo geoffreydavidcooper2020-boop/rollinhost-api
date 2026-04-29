@@ -561,4 +561,109 @@ router.get("/:slug/returning-guest/:email", async (req, res) => {
   }
 });
 
+// ── GET /parks/:slug/long-term-settings ──────────────────────────────────
+// Returns all the long-term-specific config for a park: fees, electric rate,
+// notice delivery, SMS recipients, lease/waiver template flags, etc.
+router.get("/:slug/long-term-settings", async (req, res) => {
+  const { slug } = req.params;
+  try {
+    const { rows } = await db.query(
+      `SELECT
+         jurisdiction,
+         electric_rate_per_kwh,
+         water_rate_per_gallon,
+         background_check_fee,
+         notice_fee,
+         nsf_fee,
+         late_fee_initial,
+         late_fee_daily,
+         late_fee_grace_days,
+         lot_maintenance_hourly,
+         extra_vehicle_monthly,
+         boat_storage_monthly,
+         septic_violation_fine,
+         owner_address,
+         llc_name,
+         manager_name,
+         manager_phone,
+         manager_email,
+         sms_ticket_recipients,
+         notice_delivery_methods,
+         lat,
+         lng,
+         auto_checkin_enabled,
+         auto_checkin_time,
+         auto_checkout_time,
+         lease_template_version,
+         short_waiver_version,
+         long_waiver_version,
+         pet_addendum_version,
+         crime_free_addendum_version,
+         rules_version,
+         letterhead_image_url
+       FROM parks WHERE slug = $1`,
+      [slug]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Park not found" });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Long-term settings fetch error:", err);
+    res.status(500).json({ error: "Failed to fetch long-term settings" });
+  }
+});
+ 
+// ── PUT /parks/:slug/long-term-settings ──────────────────────────────────
+// Update long-term config. Accepts any subset of the fields and only updates
+// the ones provided (uses COALESCE so unspecified fields stay unchanged).
+router.put("/:slug/long-term-settings", async (req, res) => {
+  const { slug } = req.params;
+  const allowedFields = [
+    "jurisdiction",
+    "electric_rate_per_kwh", "water_rate_per_gallon",
+    "background_check_fee", "notice_fee", "nsf_fee",
+    "late_fee_initial", "late_fee_daily", "late_fee_grace_days",
+    "lot_maintenance_hourly", "extra_vehicle_monthly", "boat_storage_monthly",
+    "septic_violation_fine",
+    "owner_address", "llc_name",
+    "manager_name", "manager_phone", "manager_email",
+    "sms_ticket_recipients", "notice_delivery_methods",
+    "lat", "lng",
+    "auto_checkin_enabled", "auto_checkin_time", "auto_checkout_time",
+    "letterhead_image_url"
+  ];
+ 
+  const updates = [];
+  const values = [];
+  let paramIndex = 1;
+ 
+  for (const field of allowedFields) {
+    if (req.body[field] !== undefined) {
+      updates.push(`${field} = $${paramIndex}`);
+      values.push(req.body[field]);
+      paramIndex++;
+    }
+  }
+ 
+  if (!updates.length) {
+    return res.status(400).json({ error: "No valid fields provided" });
+  }
+ 
+  values.push(slug);
+ 
+  try {
+    const { rows } = await db.query(
+      `UPDATE parks SET ${updates.join(", ")}, updated_at = NOW()
+       WHERE slug = $${paramIndex}
+       RETURNING id, slug, name`,
+      values
+    );
+    if (!rows.length) return res.status(404).json({ error: "Park not found" });
+    console.log(`Long-term settings updated for ${slug}`);
+    res.json({ success: true, park: rows[0] });
+  } catch (err) {
+    console.error("Long-term settings update error:", err);
+    res.status(500).json({ error: "Failed to update long-term settings" });
+  }
+});
+
 module.exports = router;
